@@ -1,0 +1,33 @@
+#ifndef BYPLANES_PROJECTILE_H
+#define BYPLANES_PROJECTILE_H
+
+#include <array>
+#include "Sprite.h"
+#include "GameConstants.h"
+
+struct Projectile {
+    float x = 0.f;
+    float y = 0.f;
+    float velX = 0.f;
+    float velY = 0.f;
+    float lifetime = 0.f;
+    bool active = false;
+    Sprite sprite;
+};
+
+class ProjectilePool {
+public:
+    void init(std::shared_ptr<TextureAsset> texture);
+    void spawn(float x, float y, float velX);
+    void spawnDirectional(float x, float y, float velX, float velY);
+    void updateAll(float dt);
+    void drawAll(const Shader &shader) const;
+    std::array<Projectile, MAX_PROJECTILES> &getProjectiles() { return projectiles_; }
+    const std::array<Projectile, MAX_PROJECTILES> &getProjectiles() const { return projectiles_; }
+
+private:
+    std::array<Projectile, MAX_PROJECTILES> projectiles_;
+    std::shared_ptr<TextureAsset> texture_;
+};
+
+#endif //BYPLANES_PROJECTILE_H
