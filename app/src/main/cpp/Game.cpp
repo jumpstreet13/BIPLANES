@@ -27,6 +27,19 @@ Game::~Game() {
     }
 }
 
+void Game::initButtonSprite(Sprite &sprite,
+                            const std::shared_ptr<TextureAsset> &texture,
+                            float x, float y, float width, float height) const {
+    sprite.init(texture, width, height);
+    sprite.x = x;
+    sprite.y = y;
+}
+
+bool Game::pointInButton(const Sprite &button, float x, float y) const {
+    return x >= button.x - button.scaleX && x <= button.x + button.scaleX
+           && y >= button.y - button.scaleY && y <= button.y + button.scaleY;
+}
+
 void Game::loadSplashSprites() {
     if (splashLoaded_) return;
     auto *am = app_->activity->assetManager;
@@ -48,15 +61,11 @@ void Game::loadMenuSprites() {
 
     // Button sprites (button.png: 255x12, elongated bar)
     auto btnTex = TextureAsset::loadAsset(am, "button.png");
-    float btnW = 1.8f;
-    float btnH = 0.35f;
-    menuBtn1_.init(btnTex, btnW, btnH);
-    menuBtn1_.x = 0.f;
-    menuBtn1_.y = 0.3f;
-
-    menuBtn2_.init(btnTex, btnW, btnH);
-    menuBtn2_.x = 0.f;
-    menuBtn2_.y = -0.4f;
+    initButtonSprite(menuBtn1_, btnTex, 0.f, 0.55f, 1.8f, 0.35f);
+    initButtonSprite(menuBtn2_, btnTex, 0.f, -0.55f, 1.8f, 0.35f);
+    initButtonSprite(aiEasyBtn_, btnTex, 0.f, 0.72f, 1.8f, 0.28f);
+    initButtonSprite(aiMediumBtn_, btnTex, 0.f, 0.00f, 1.8f, 0.28f);
+    initButtonSprite(aiHardBtn_, btnTex, 0.f, -0.72f, 1.8f, 0.28f);
 
     // Font texture for button text
     fontTex_ = TextureAsset::loadAsset(am, "font.png");
@@ -139,19 +148,41 @@ void Game::handleInput() {
                 float wx, wy;
                 Utility::screenToWorld(rawX, rawY, screenW, screenH, 2.0f, aspect, wx, wy);
 
-                // VS COMPUTER button (y: -0.05..0.65)
-                if (wx > -1.8f && wx < 1.8f && wy > -0.05f && wy < 0.65f) {
+                if (pointInButton(menuBtn1_, wx, wy)) {
                     pendingMode_ = GameMode::VsAI;
-                    state_ = GameState::Playing;
+                    state_ = GameState::AiDifficultyMenu;
                     sessionInitialized_ = false;
                 }
-                // VS BLUETOOTH button (y: -0.75..-0.05)
-                else if (wx > -1.8f && wx < 1.8f && wy > -0.75f && wy < -0.05f) {
+                else if (pointInButton(menuBtn2_, wx, wy)) {
                     pendingMode_ = GameMode::VsBluetooth;
                     state_ = GameState::BluetoothLobby;
-                    btHosting_ = false;
-                    btJoining_ = false;
-                    btStatusTimer_ = 0.f;
+                }
+            }
+            break;
+        }
+        case GameState::AiDifficultyMenu: {
+            if (touch.screenTapped) {
+                float screenW = (float) renderer_->getWidth();
+                float screenH = (float) renderer_->getHeight();
+                float aspect = renderer_->getAspect();
+
+                float wx, wy;
+                Utility::screenToWorld(touch.tapX, touch.tapY, screenW, screenH, 2.0f, aspect, wx, wy);
+
+                if (pointInButton(aiEasyBtn_, wx, wy)) {
+                    aiDifficulty_ = AiDifficulty::Easy;
+                    state_ = GameState::Playing;
+                    sessionInitialized_ = false;
+                } else if (pointInButton(aiMediumBtn_, wx, wy)) {
+                    aiDifficulty_ = AiDifficulty::Medium;
+                    state_ = GameState::Playing;
+                    sessionInitialized_ = false;
+                } else if (pointInButton(aiHardBtn_, wx, wy)) {
+                    aiDifficulty_ = AiDifficulty::Hard;
+                    state_ = GameState::Playing;
+                    sessionInitialized_ = false;
+                } else {
+                    state_ = GameState::MainMenu;
                 }
             }
             break;
@@ -165,34 +196,22 @@ void Game::handleInput() {
                 float wx, wy;
                 Utility::screenToWorld(touch.tapX, touch.tapY, screenW, screenH, 2.0f, aspect, wx, wy);
 
-                if (!btHosting_ && !btJoining_) {
-                    // HOST GAME button
-                    if (wx > -1.8f && wx < 1.8f && wy > -0.05f && wy < 0.65f) {
-                        initBluetooth();
-                        if (btBridge_) {
-                            btBridge_->startAdvertising();
-                            btHosting_ = true;
-                            btStatusTimer_ = 0.f;
-                            aout << "BluetoothLobby: Hosting..." << std::endl;
-                        }
+                if (pointInButton(lobbyBtn1_, wx, wy)) {
+                    initBluetooth();
+                    if (btBridge_) {
+                        btBridge_->startAdvertising();
+                        aout << "BluetoothLobby: Host flow opened" << std::endl;
                     }
-                    // JOIN GAME button
-                    else if (wx > -1.8f && wx < 1.8f && wy > -0.75f && wy < -0.05f) {
-                        initBluetooth();
-                        if (btBridge_) {
-                            btBridge_->startScanning();
-                            btJoining_ = true;
-                            btStatusTimer_ = 0.f;
-                            aout << "BluetoothLobby: Joining..." << std::endl;
-                        }
+                } else if (pointInButton(lobbyBtn2_, wx, wy)) {
+                    initBluetooth();
+                    if (btBridge_) {
+                        btBridge_->startScanning();
+                        aout << "BluetoothLobby: Join flow opened" << std::endl;
                     }
                 } else {
-                    // Tap anywhere to cancel and go back
                     if (btBridge_) {
                         btBridge_->disconnect();
                     }
-                    btHosting_ = false;
-                    btJoining_ = false;
                     state_ = GameState::MainMenu;
                 }
             }
@@ -205,8 +224,6 @@ void Game::handleInput() {
                 // Disconnect Bluetooth if it was a BT game
                 if (pendingMode_ == GameMode::VsBluetooth && btBridge_) {
                     btBridge_->disconnect();
-                    btHosting_ = false;
-                    btJoining_ = false;
                 }
                 state_ = GameState::MainMenu;
                 sessionInitialized_ = false;
@@ -224,7 +241,7 @@ void Game::update(float dt) {
         }
     }
 
-    if (state_ == GameState::MainMenu) {
+    if (state_ == GameState::MainMenu || state_ == GameState::AiDifficultyMenu) {
         menuAnimTimer_ += dt;
         if (menuSpritesLoaded_) {
             menuBackground_.update(dt);
@@ -232,7 +249,6 @@ void Game::update(float dt) {
     }
 
     if (state_ == GameState::BluetoothLobby) {
-        btStatusTimer_ += dt;
         if (!menuSpritesLoaded_ && renderer_->getWidth() > 0) {
             loadMenuSprites();
         }
@@ -240,7 +256,7 @@ void Game::update(float dt) {
             menuBackground_.update(dt);
         }
         // Check if Bluetooth connected
-        if ((btHosting_ || btJoining_) && btBridge_ && btBridge_->isConnected()) {
+        if (btBridge_ && btBridge_->isConnected()) {
             aout << "BluetoothLobby: Connected! Starting game." << std::endl;
             state_ = GameState::Playing;
             sessionInitialized_ = false;
@@ -304,6 +320,49 @@ void Game::render() {
         }
     }
 
+    if (state_ == GameState::AiDifficultyMenu) {
+        if (!menuSpritesLoaded_ && renderer_->getWidth() > 0) {
+            loadMenuSprites();
+        }
+        if (menuSpritesLoaded_) {
+            menuBackground_.draw(renderer_->getShader());
+
+            aiEasyBtn_.draw(renderer_->getShader());
+            aiMediumBtn_.draw(renderer_->getShader());
+            aiHardBtn_.draw(renderer_->getShader());
+
+            float titleCharW = 0.08f;
+            float titleCharH = 0.10f;
+            const char *title = "CHOOSE DIFFICULTY";
+            float titleW = strlen(title) * titleCharW * 2.f;
+            drawText(renderer_->getShader(), title,
+                     -titleW / 2.f + titleCharW, 1.25f, titleCharW, titleCharH);
+
+            float charW = 0.075f;
+            float charH = 0.095f;
+
+            const char *easy = "EASY";
+            float easyW = strlen(easy) * charW * 2.f;
+            drawText(renderer_->getShader(), easy,
+                     aiEasyBtn_.x - easyW / 2.f + charW, aiEasyBtn_.y, charW, charH);
+
+            const char *medium = "MEDIUM";
+            float mediumW = strlen(medium) * charW * 2.f;
+            drawText(renderer_->getShader(), medium,
+                     aiMediumBtn_.x - mediumW / 2.f + charW, aiMediumBtn_.y, charW, charH);
+
+            const char *hard = "HARD";
+            float hardW = strlen(hard) * charW * 2.f;
+            drawText(renderer_->getShader(), hard,
+                     aiHardBtn_.x - hardW / 2.f + charW, aiHardBtn_.y, charW, charH);
+
+            const char *hint = "TAP OUTSIDE TO GO BACK";
+            float hintW = strlen(hint) * charW * 2.f;
+            drawText(renderer_->getShader(), hint,
+                     -hintW / 2.f + charW, -1.35f, charW * 0.65f, charH * 0.65f);
+        }
+    }
+
     // Bluetooth Lobby
     if (state_ == GameState::BluetoothLobby) {
         if (!lobbySpritesLoaded_ && renderer_->getWidth() > 0) {
@@ -317,39 +376,23 @@ void Game::render() {
 
             float charW = 0.08f;
             float charH = 0.10f;
+            lobbyBtn1_.draw(renderer_->getShader());
+            lobbyBtn2_.draw(renderer_->getShader());
 
-            if (!btHosting_ && !btJoining_) {
-                // Show HOST GAME / JOIN GAME buttons
-                lobbyBtn1_.draw(renderer_->getShader());
-                lobbyBtn2_.draw(renderer_->getShader());
+            const char *text1 = "HOST GAME";
+            float tw1 = strlen(text1) * charW * 2.f;
+            drawText(renderer_->getShader(), text1,
+                     lobbyBtn1_.x - tw1 / 2.f + charW, lobbyBtn1_.y, charW, charH);
 
-                const char *text1 = "HOST GAME";
-                float tw1 = strlen(text1) * charW * 2.f;
-                drawText(renderer_->getShader(), text1,
-                         lobbyBtn1_.x - tw1 / 2.f + charW, lobbyBtn1_.y, charW, charH);
+            const char *text2 = "JOIN GAME";
+            float tw2 = strlen(text2) * charW * 2.f;
+            drawText(renderer_->getShader(), text2,
+                     lobbyBtn2_.x - tw2 / 2.f + charW, lobbyBtn2_.y, charW, charH);
 
-                const char *text2 = "JOIN GAME";
-                float tw2 = strlen(text2) * charW * 2.f;
-                drawText(renderer_->getShader(), text2,
-                         lobbyBtn2_.x - tw2 / 2.f + charW, lobbyBtn2_.y, charW, charH);
-            } else {
-                // Show waiting status
-                const char *statusBase = btHosting_ ? "WAITING" : "CONNECTING";
-                // Animated dots
-                int dots = ((int)(btStatusTimer_ * 2.f)) % 4;
-                char statusText[32];
-                snprintf(statusText, sizeof(statusText), "%s%.*s", statusBase, dots, "...");
-
-                float tw = strlen(statusText) * charW * 2.f;
-                drawText(renderer_->getShader(), statusText,
-                         -tw / 2.f + charW, 0.1f, charW, charH);
-
-                // "TAP TO CANCEL" below
-                const char *cancel = "TAP TO CANCEL";
-                float twc = strlen(cancel) * charW * 2.f;
-                drawText(renderer_->getShader(), cancel,
-                         -twc / 2.f + charW, -0.4f, charW * 0.7f, charH * 0.7f);
-            }
+            const char *hint = "TAP OUTSIDE TO GO BACK";
+            float hintW = strlen(hint) * charW * 2.f;
+            drawText(renderer_->getShader(), hint,
+                     -hintW / 2.f + charW, -1.35f, charW * 0.65f, charH * 0.65f);
         }
     }
 
@@ -390,6 +433,12 @@ void Game::initBluetooth() {
     }
     jniEnv_ = env;
     btBridge_ = new BluetoothBridge(jniEnv_, app_->activity->javaGameActivity);
+    if (!btBridge_->isReady()) {
+        delete btBridge_;
+        btBridge_ = nullptr;
+        aout << "BluetoothLobby: Bluetooth initialization failed" << std::endl;
+        return;
+    }
     aout << "BluetoothLobby: Bluetooth initialized" << std::endl;
 }
 
@@ -398,15 +447,8 @@ void Game::loadLobbySprites() {
     auto *am = app_->activity->assetManager;
 
     auto btnTex = TextureAsset::loadAsset(am, "button.png");
-    float btnW = 1.8f;
-    float btnH = 0.35f;
-    lobbyBtn1_.init(btnTex, btnW, btnH);
-    lobbyBtn1_.x = 0.f;
-    lobbyBtn1_.y = 0.3f;
-
-    lobbyBtn2_.init(btnTex, btnW, btnH);
-    lobbyBtn2_.x = 0.f;
-    lobbyBtn2_.y = -0.4f;
+    initButtonSprite(lobbyBtn1_, btnTex, 0.f, 0.55f, 1.8f, 0.35f);
+    initButtonSprite(lobbyBtn2_, btnTex, 0.f, -0.55f, 1.8f, 0.35f);
 
     if (!fontTex_) {
         fontTex_ = TextureAsset::loadAsset(am, "font.png");
@@ -418,7 +460,7 @@ void Game::loadLobbySprites() {
 void Game::initSession() {
     auto *assetManager = app_->activity->assetManager;
     float aspect = renderer_->getAspect();
-    session_.init(assetManager, aspect);
+    session_.init(assetManager, aspect, pendingMode_, aiDifficulty_);
     session_.reset();
     sessionInitialized_ = true;
 
@@ -426,7 +468,7 @@ void Game::initSession() {
     if (!uiSpritesLoaded_) {
         auto btnUpTex   = TextureAsset::loadAsset(assetManager, "btn_up.png");
         auto btnDownTex = TextureAsset::loadAsset(assetManager, "btn_down.png");
-        float screenHalfW = WORLD_HALF_W;
+        float screenHalfW = 2.0f * aspect;
         btnUpSprite_.init(btnUpTex, 0.35f, 0.35f);
         btnUpSprite_.x = -screenHalfW + 0.45f;
         btnUpSprite_.y = -1.55f;

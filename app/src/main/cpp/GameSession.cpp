@@ -3,8 +3,9 @@
 #include <cmath>
 #include <string>
 
-void GameSession::init(AAssetManager *assetManager, float aspect) {
+void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode, AiDifficulty difficulty) {
     aspect_ = aspect;
+    mode_ = mode;
 
     auto p1Tex = TextureAsset::loadAsset(assetManager, "plane_p1.png");
     auto p2Tex = TextureAsset::loadAsset(assetManager, "plane_p2.png");
@@ -32,6 +33,7 @@ void GameSession::init(AAssetManager *assetManager, float aspect) {
     background_.init(assetManager, aspect);
     hud_.init(assetManager);
     sound_.init(assetManager);
+    ai_.setDifficulty(difficulty);
 
     playerFireCooldown_ = 0.f;
     enemyFireCooldown_ = 0.f;
@@ -93,6 +95,8 @@ int GameSession::getWinner() const {
 }
 
 void GameSession::reset() {
+    ai_.reset();
+
     player_.reset(-3.3f, false);
     player_.score = 0;
     player_.setGrounded();  // Player starts on ground

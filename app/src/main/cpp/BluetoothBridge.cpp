@@ -13,10 +13,69 @@ BluetoothBridge* BluetoothBridge::instance_ = nullptr;
 // [29-48] float projY[5]
 static constexpr int PACKET_SIZE = 49;
 
+namespace {
+bool clearJniException(JNIEnv* env, const char* context) {
+    if (!env->ExceptionCheck()) {
+        return false;
+    }
+    aout << "BluetoothBridge: JNI exception in " << context << std::endl;
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return true;
+}
+
+jclass loadBluetoothManagerClass(JNIEnv* env, jobject activity) {
+    jclass activityClass = env->GetObjectClass(activity);
+    if (!activityClass) {
+        clearJniException(env, "GetObjectClass(activity)");
+        return nullptr;
+    }
+
+    jmethodID getClassLoaderMethod = env->GetMethodID(
+            activityClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    if (!getClassLoaderMethod || clearJniException(env, "GameActivity.getClassLoader")) {
+        env->DeleteLocalRef(activityClass);
+        return nullptr;
+    }
+
+    jobject classLoader = env->CallObjectMethod(activity, getClassLoaderMethod);
+    env->DeleteLocalRef(activityClass);
+    if (!classLoader || clearJniException(env, "CallObjectMethod(getClassLoader)")) {
+        return nullptr;
+    }
+
+    jclass classLoaderClass = env->GetObjectClass(classLoader);
+    if (!classLoaderClass) {
+        env->DeleteLocalRef(classLoader);
+        clearJniException(env, "GetObjectClass(classLoader)");
+        return nullptr;
+    }
+
+    jmethodID loadClassMethod = env->GetMethodID(
+            classLoaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (!loadClassMethod || clearJniException(env, "ClassLoader.loadClass")) {
+        env->DeleteLocalRef(classLoaderClass);
+        env->DeleteLocalRef(classLoader);
+        return nullptr;
+    }
+
+    jstring className = env->NewStringUTF("com.abocha.byplanes.BluetoothManager");
+    jobject classObject = env->CallObjectMethod(classLoader, loadClassMethod, className);
+    env->DeleteLocalRef(className);
+    env->DeleteLocalRef(classLoaderClass);
+    env->DeleteLocalRef(classLoader);
+    if (!classObject || clearJniException(env, "loadClass(BluetoothManager)")) {
+        return nullptr;
+    }
+
+    return static_cast<jclass>(classObject);
+}
+}
+
 BluetoothBridge::BluetoothBridge(JNIEnv* env, jobject activity)
     : env_(env) {
 
-    jclass btClass = env->FindClass("com/abocha/byplanes/BluetoothManager");
+    jclass btClass = loadBluetoothManagerClass(env, activity);
     if (!btClass) {
         aout << "BluetoothBridge: BluetoothManager class not found" << std::endl;
         btManager_ = nullptr;
@@ -25,7 +84,21 @@ BluetoothBridge::BluetoothBridge(JNIEnv* env, jobject activity)
 
     jmethodID ctor = env->GetMethodID(btClass, "<init>",
         "(Lcom/google/androidgamesdk/GameActivity;)V");
+    if (!ctor || clearJniException(env, "BluetoothManager.<init>")) {
+        env->DeleteLocalRef(btClass);
+        aout << "BluetoothBridge: BluetoothManager constructor lookup failed" << std::endl;
+        btManager_ = nullptr;
+        return;
+    }
+
     jobject localRef = env->NewObject(btClass, ctor, activity);
+    if (!localRef || clearJniException(env, "NewObject(BluetoothManager)")) {
+        env->DeleteLocalRef(btClass);
+        aout << "BluetoothBridge: BluetoothManager instantiation failed" << std::endl;
+        btManager_ = nullptr;
+        return;
+    }
+
     btManager_ = env->NewGlobalRef(localRef);
     env->DeleteLocalRef(localRef);
 
@@ -34,6 +107,26 @@ BluetoothBridge::BluetoothBridge(JNIEnv* env, jobject activity)
     startAdvMethod_    = env->GetMethodID(btClass, "startAdvertising", "()V");
     startScanMethod_   = env->GetMethodID(btClass, "startScanning", "()V");
     disconnectMethod_  = env->GetMethodID(btClass, "disconnect", "()V");
+    env->DeleteLocalRef(btClass);
+
+    if (clearJniException(env, "BluetoothManager method lookup")) {
+        if (btManager_) {
+            env->DeleteGlobalRef(btManager_);
+            btManager_ = nullptr;
+        }
+        return;
+    }
+
+    initialized_ = btManager_ && sendMethod_ && isConnectedMethod_ &&
+                   startAdvMethod_ && startScanMethod_ && disconnectMethod_;
+    if (!initialized_) {
+        aout << "BluetoothBridge: BluetoothManager method lookup returned null" << std::endl;
+        if (btManager_) {
+            env->DeleteGlobalRef(btManager_);
+            btManager_ = nullptr;
+        }
+        return;
+    }
 
     instance_ = this;
     aout << "BluetoothBridge: initialized" << std::endl;
@@ -74,22 +167,26 @@ bool BluetoothBridge::pollReceivedState(BluetoothState& outState) {
 }
 
 bool BluetoothBridge::isConnected() const {
-    if (!btManager_ || !isConnectedMethod_) return false;
+    if (!initialized_ || !btManager_ || !isConnectedMethod_) return false;
     return env_->CallBooleanMethod(btManager_, isConnectedMethod_) == JNI_TRUE;
 }
 
+bool BluetoothBridge::isReady() const {
+    return initialized_;
+}
+
 void BluetoothBridge::startAdvertising() {
-    if (btManager_ && startAdvMethod_)
+    if (initialized_ && btManager_ && startAdvMethod_)
         env_->CallVoidMethod(btManager_, startAdvMethod_);
 }
 
 void BluetoothBridge::startScanning() {
-    if (btManager_ && startScanMethod_)
+    if (initialized_ && btManager_ && startScanMethod_)
         env_->CallVoidMethod(btManager_, startScanMethod_);
 }
 
 void BluetoothBridge::disconnect() {
-    if (btManager_ && disconnectMethod_)
+    if (initialized_ && btManager_ && disconnectMethod_)
         env_->CallVoidMethod(btManager_, disconnectMethod_);
 }
 

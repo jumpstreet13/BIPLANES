@@ -76,7 +76,7 @@ void Renderer::beginFrame() {
         Utility::buildOrthographicMatrix(
                 projectionMatrix,
                 kProjectionHalfHeight,
-                kTargetAspect,
+                getAspect(),
                 kProjectionNearPlane,
                 kProjectionFarPlane);
         shader_->setProjectionMatrix(projectionMatrix);
@@ -193,19 +193,10 @@ void Renderer::updateRenderArea() {
     if (surfW != width_ || surfH != height_) {
         width_ = surfW;
         height_ = surfH;
-
-        float surfaceAspect = static_cast<float>(width_) / static_cast<float>(height_);
-        if (surfaceAspect > kTargetAspect) {
-            viewportHeight_ = height_;
-            viewportWidth_ = static_cast<EGLint>(height_ * kTargetAspect + 0.5f);
-            viewportX_ = (width_ - viewportWidth_) / 2;
-            viewportY_ = 0;
-        } else {
-            viewportWidth_ = width_;
-            viewportHeight_ = static_cast<EGLint>(width_ / kTargetAspect + 0.5f);
-            viewportX_ = 0;
-            viewportY_ = (height_ - viewportHeight_) / 2;
-        }
+        viewportX_ = 0;
+        viewportY_ = 0;
+        viewportWidth_ = width_;
+        viewportHeight_ = height_;
 
         aout << "Renderer: surface=" << width_ << "x" << height_
              << " viewport=" << viewportWidth_ << "x" << viewportHeight_

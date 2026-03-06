@@ -28,6 +28,10 @@ private:
     void loadMenuSprites();
     void loadLobbySprites();
     void initBluetooth();
+    void initButtonSprite(Sprite &sprite,
+                          const std::shared_ptr<TextureAsset> &texture,
+                          float x, float y, float width, float height) const;
+    bool pointInButton(const Sprite &button, float x, float y) const;
     void drawText(const Shader &shader, const char *text,
                   float startX, float y, float charW, float charH) const;
 
@@ -37,6 +41,7 @@ private:
     GameSession session_;
     GameState state_ = GameState::SplashScreen;
     GameMode pendingMode_ = GameMode::VsAI;
+    AiDifficulty aiDifficulty_ = AiDifficulty::Medium;
     bool sessionInitialized_ = false;
 
     int winner_ = 1;
@@ -58,6 +63,9 @@ private:
     Background menuBackground_;
     Sprite menuBtn1_;           // button.png for VS COMPUTER
     Sprite menuBtn2_;           // button.png for VS BLUETOOTH
+    Sprite aiEasyBtn_;
+    Sprite aiMediumBtn_;
+    Sprite aiHardBtn_;
     std::shared_ptr<TextureAsset> fontTex_;  // font.png
     bool menuSpritesLoaded_ = false;
     float menuAnimTimer_ = 0.f;
@@ -69,9 +77,6 @@ private:
     Sprite lobbyBtn1_;          // HOST GAME
     Sprite lobbyBtn2_;          // JOIN GAME
     bool lobbySpritesLoaded_ = false;
-    bool btHosting_ = false;
-    bool btJoining_ = false;
-    float btStatusTimer_ = 0.f;   // for "..." animation
 };
 
 #endif //BYPLANES_GAME_H

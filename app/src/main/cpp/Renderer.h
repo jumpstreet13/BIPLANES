@@ -4,7 +4,6 @@
 #include <EGL/egl.h>
 #include <memory>
 
-#include "GameConstants.h"
 #include "Shader.h"
 
 struct android_app;
@@ -36,7 +35,11 @@ public:
     EGLint getHeight() const { return viewportHeight_; }
     EGLint getOffsetX() const { return viewportX_; }
     EGLint getOffsetY() const { return viewportY_; }
-    float getAspect() const { return kTargetAspect; }
+    float getAspect() const {
+        return viewportHeight_ > 0
+               ? static_cast<float>(viewportWidth_) / static_cast<float>(viewportHeight_)
+               : 16.f / 9.f;
+    }
 
 private:
     void initRenderer();
@@ -56,8 +59,6 @@ private:
     EGLint viewportHeight_;
 
     bool shaderNeedsNewProjectionMatrix_;
-
-    static constexpr float kTargetAspect = WORLD_HALF_W / WORLD_HALF_H;
 
     std::unique_ptr<Shader> shader_;
 };

@@ -29,6 +29,7 @@ public:
     bool pollReceivedState(BluetoothState& outState);
 
     bool isConnected() const;
+    bool isReady() const;
     void startAdvertising();
     void startScanning();
     void disconnect();
@@ -46,6 +47,7 @@ private:
     jmethodID  startAdvMethod_;
     jmethodID  startScanMethod_;
     jmethodID  disconnectMethod_;
+    bool       initialized_ = false;
 
     mutable std::mutex mutex_;
     BluetoothState     latestState_;

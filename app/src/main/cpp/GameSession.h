@@ -12,7 +12,7 @@
 
 class GameSession {
 public:
-    void init(AAssetManager *assetManager, float aspect);
+    void init(AAssetManager *assetManager, float aspect, GameMode mode, AiDifficulty difficulty);
     bool update(float dt, const TouchState &input);
     void draw(const Shader &shader) const;
     int getWinner() const;
