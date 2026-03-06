@@ -20,6 +20,8 @@ void Sprite::buildModel() {
 
 void Sprite::draw(const Shader &shader) const {
     if (!visible || !texture_) return;
+    const GLint positionAttribute = shader.getPositionAttribute();
+    const GLint uvAttribute = shader.getUvAttribute();
 
     // Build model matrix with translation and scale
     float modelMatrix[16];
@@ -37,13 +39,13 @@ void Sprite::draw(const Shader &shader) const {
 
     // Setup vertex attributes
     glVertexAttribPointer(
-            0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), verts.data());
-    glEnableVertexAttribArray(0);
+            positionAttribute, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), verts.data());
+    glEnableVertexAttribArray(positionAttribute);
 
     glVertexAttribPointer(
-            1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+            uvAttribute, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex),
             ((uint8_t *) verts.data()) + sizeof(Vector3));
-    glEnableVertexAttribArray(1);
+    glEnableVertexAttribArray(uvAttribute);
 
     // Bind texture
     glActiveTexture(GL_TEXTURE0);
@@ -52,6 +54,6 @@ void Sprite::draw(const Shader &shader) const {
     // Draw
     glDrawElements(GL_TRIANGLES, indices_.size(), GL_UNSIGNED_SHORT, indices_.data());
 
-    glDisableVertexAttribArray(1);
-    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(uvAttribute);
+    glDisableVertexAttribArray(positionAttribute);
 }

@@ -1,6 +1,8 @@
 #ifndef BYPLANES_GAME_H
 #define BYPLANES_GAME_H
 
+#include <memory>
+
 #include "Renderer.h"
 #include "InputManager.h"
 #include "GameSession.h"
@@ -30,7 +32,7 @@ private:
                   float startX, float y, float charW, float charH) const;
 
     android_app *app_;
-    Renderer *renderer_ = nullptr;
+    std::unique_ptr<Renderer> renderer_;
     InputManager inputManager_;
     GameSession session_;
     GameState state_ = GameState::SplashScreen;

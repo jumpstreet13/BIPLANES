@@ -65,6 +65,9 @@ public:
 
     void setModelMatrix(float *m) const;
 
+    GLint getPositionAttribute() const { return position_; }
+    GLint getUvAttribute() const { return uv_; }
+
 private:
     /*!
      * Helper function to load a shader of a given type

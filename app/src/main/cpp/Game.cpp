@@ -1,4 +1,5 @@
 #include "Game.h"
+#include "GameConstants.h"
 #include "Utility.h"
 #include <game-activity/native_app_glue/android_native_app_glue.h>
 #include <game-activity/GameActivity.h>
@@ -16,7 +17,7 @@ static constexpr float FONT_CELL = 8.f;
 static constexpr float SPLASH_DURATION = 2.5f;
 
 Game::Game(android_app *pApp) : app_(pApp) {
-    renderer_ = new Renderer(pApp);
+    renderer_ = std::make_unique<Renderer>(pApp);
 }
 
 Game::~Game() {
@@ -24,7 +25,6 @@ Game::~Game() {
     if (jniEnv_ && javaVM_) {
         javaVM_->DetachCurrentThread();
     }
-    delete renderer_;
 }
 
 void Game::loadSplashSprites() {
@@ -41,7 +41,7 @@ void Game::loadSplashSprites() {
 void Game::loadMenuSprites() {
     if (menuSpritesLoaded_) return;
     auto *am = app_->activity->assetManager;
-    float aspect = (float) renderer_->getWidth() / (float) renderer_->getHeight();
+    float aspect = renderer_->getAspect();
 
     // Menu background — same as game map
     menuBackground_.init(am, aspect);
@@ -99,8 +99,10 @@ void Game::handleInput() {
 
     inputManager_.beginFrame();
     inputManager_.processMotionEvents(inputBuffer,
-                                       (float) renderer_->getWidth(),
-                                       (float) renderer_->getHeight());
+                                      (float) renderer_->getOffsetX(),
+                                      (float) renderer_->getOffsetY(),
+                                      (float) renderer_->getWidth(),
+                                      (float) renderer_->getHeight());
 
     android_app_clear_key_events(inputBuffer);
 
@@ -118,7 +120,7 @@ void Game::handleInput() {
             if (touch.screenTapped || touch.upButtonHeld || touch.downButtonHeld) {
                 float screenW = (float) renderer_->getWidth();
                 float screenH = (float) renderer_->getHeight();
-                float aspect = screenW / screenH;
+                float aspect = renderer_->getAspect();
 
                 // Use raw touch coords
                 float rawX = touch.screenTapped ? touch.tapX : 0.f;
@@ -158,7 +160,7 @@ void Game::handleInput() {
             if (touch.screenTapped) {
                 float screenW = (float) renderer_->getWidth();
                 float screenH = (float) renderer_->getHeight();
-                float aspect = screenW / screenH;
+                float aspect = renderer_->getAspect();
 
                 float wx, wy;
                 Utility::screenToWorld(touch.tapX, touch.tapY, screenW, screenH, 2.0f, aspect, wx, wy);
@@ -415,7 +417,7 @@ void Game::loadLobbySprites() {
 
 void Game::initSession() {
     auto *assetManager = app_->activity->assetManager;
-    float aspect = (float) renderer_->getWidth() / (float) renderer_->getHeight();
+    float aspect = renderer_->getAspect();
     session_.init(assetManager, aspect);
     session_.reset();
     sessionInitialized_ = true;
@@ -424,7 +426,7 @@ void Game::initSession() {
     if (!uiSpritesLoaded_) {
         auto btnUpTex   = TextureAsset::loadAsset(assetManager, "btn_up.png");
         auto btnDownTex = TextureAsset::loadAsset(assetManager, "btn_down.png");
-        float screenHalfW = 2.0f * aspect;
+        float screenHalfW = WORLD_HALF_W;
         btnUpSprite_.init(btnUpTex, 0.35f, 0.35f);
         btnUpSprite_.x = -screenHalfW + 0.45f;
         btnUpSprite_.y = -1.55f;

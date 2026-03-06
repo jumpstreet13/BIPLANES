@@ -15,7 +15,12 @@ struct TouchState {
 class InputManager {
 public:
     void beginFrame();
-    void processMotionEvents(android_input_buffer *buf, float screenW, float screenH);
+    void processMotionEvents(
+            android_input_buffer *buf,
+            float screenX,
+            float screenY,
+            float screenW,
+            float screenH);
     const TouchState &getState() const { return state_; }
 
 private:

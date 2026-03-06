@@ -1,5 +1,6 @@
 #include "Renderer.h"
 
+#include <android/native_window.h>
 #include <game-activity/native_app_glue/android_native_app_glue.h>
 #include <GLES3/gl3.h>
 #include <memory>
@@ -15,8 +16,8 @@
 
 // Vertex shader
 static const char *vertex = R"vertex(#version 300 es
-in vec3 inPosition;
-in vec2 inUV;
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec2 inUV;
 
 out vec2 fragUV;
 
@@ -49,6 +50,9 @@ static constexpr float kProjectionNearPlane = -1.f;
 static constexpr float kProjectionFarPlane = 1.f;
 
 Renderer::~Renderer() {
+    // Release GL objects while the context is still current.
+    shader_.reset();
+
     if (display_ != EGL_NO_DISPLAY) {
         eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         if (context_ != EGL_NO_CONTEXT) {
@@ -72,7 +76,7 @@ void Renderer::beginFrame() {
         Utility::buildOrthographicMatrix(
                 projectionMatrix,
                 kProjectionHalfHeight,
-                float(width_) / height_,
+                kTargetAspect,
                 kProjectionNearPlane,
                 kProjectionFarPlane);
         shader_->setProjectionMatrix(projectionMatrix);
@@ -123,6 +127,14 @@ void Renderer::initRenderer() {
 
     EGLint format;
     eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &format);
+    nativeFormat_ = format;
+    ANativeWindow_setBuffersGeometry(app_->window, 0, 0, format);
+
+    aout << "Renderer::initRenderer: window="
+         << ANativeWindow_getWidth(app_->window) << "x"
+         << ANativeWindow_getHeight(app_->window)
+         << " format=" << format << std::endl;
+
     EGLSurface surface = eglCreateWindowSurface(display, config, app_->window, nullptr);
 
     EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
@@ -134,6 +146,7 @@ void Renderer::initRenderer() {
     display_ = display;
     surface_ = surface;
     context_ = context;
+    config_ = config;
 
     width_ = -1;
     height_ = -1;
@@ -154,16 +167,51 @@ void Renderer::initRenderer() {
 }
 
 void Renderer::updateRenderArea() {
-    EGLint width;
-    eglQuerySurface(display_, surface_, EGL_WIDTH, &width);
+    EGLint surfW, surfH;
+    eglQuerySurface(display_, surface_, EGL_WIDTH, &surfW);
+    eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfH);
 
-    EGLint height;
-    eglQuerySurface(display_, surface_, EGL_HEIGHT, &height);
+    // Check if native window resized (e.g. system bars hidden, cutout mode changed)
+    if (app_->window) {
+        int32_t winW = ANativeWindow_getWidth(app_->window);
+        int32_t winH = ANativeWindow_getHeight(app_->window);
 
-    if (width != width_ || height != height_) {
-        width_ = width;
-        height_ = height;
-        glViewport(0, 0, width, height);
+        if (winW > 0 && winH > 0 && (winW != surfW || winH != surfH)) {
+            aout << "Renderer: resize detected window=" << winW << "x" << winH
+                 << " surface=" << surfW << "x" << surfH << std::endl;
+            // Recreate EGL surface to match new window size
+            eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            eglDestroySurface(display_, surface_);
+            ANativeWindow_setBuffersGeometry(app_->window, 0, 0, nativeFormat_);
+            surface_ = eglCreateWindowSurface(display_, config_, app_->window, nullptr);
+            eglMakeCurrent(display_, surface_, surface_, context_);
+            eglQuerySurface(display_, surface_, EGL_WIDTH, &surfW);
+            eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfH);
+        }
+    }
+
+    if (surfW != width_ || surfH != height_) {
+        width_ = surfW;
+        height_ = surfH;
+
+        float surfaceAspect = static_cast<float>(width_) / static_cast<float>(height_);
+        if (surfaceAspect > kTargetAspect) {
+            viewportHeight_ = height_;
+            viewportWidth_ = static_cast<EGLint>(height_ * kTargetAspect + 0.5f);
+            viewportX_ = (width_ - viewportWidth_) / 2;
+            viewportY_ = 0;
+        } else {
+            viewportWidth_ = width_;
+            viewportHeight_ = static_cast<EGLint>(width_ / kTargetAspect + 0.5f);
+            viewportX_ = 0;
+            viewportY_ = (height_ - viewportHeight_) / 2;
+        }
+
+        aout << "Renderer: surface=" << width_ << "x" << height_
+             << " viewport=" << viewportWidth_ << "x" << viewportHeight_
+             << " offset=" << viewportX_ << "," << viewportY_ << std::endl;
+
+        glViewport(viewportX_, viewportY_, viewportWidth_, viewportHeight_);
         shaderNeedsNewProjectionMatrix_ = true;
     }
 }
