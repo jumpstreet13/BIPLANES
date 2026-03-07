@@ -53,18 +53,21 @@ Shader *Shader::loadShader(
                     program,
                     projectionMatrixUniformName.c_str());
             GLint modelMatrixUniform = glGetUniformLocation(program, "uModel");
+            GLint tintColorUniform = glGetUniformLocation(program, "uTint");
 
             // Only create a new shader if all the attributes are found.
             if (positionAttribute != -1
                 && uvAttribute != -1
-                && projectionMatrixUniform != -1) {
+                && projectionMatrixUniform != -1
+                && tintColorUniform != -1) {
 
                 shader = new Shader(
                         program,
                         positionAttribute,
                         uvAttribute,
                         projectionMatrixUniform,
-                        modelMatrixUniform);
+                        modelMatrixUniform,
+                        tintColorUniform);
             } else {
                 glDeleteProgram(program);
             }
@@ -157,4 +160,8 @@ void Shader::setProjectionMatrix(float *projectionMatrix) const {
 
 void Shader::setModelMatrix(float *m) const {
     glUniformMatrix4fv(modelMatrix_, 1, false, m);
+}
+
+void Shader::setTintColor(float r, float g, float b, float a) const {
+    glUniform4f(tintColor_, r, g, b, a);
 }

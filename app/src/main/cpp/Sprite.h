@@ -23,6 +23,10 @@ public:
     float rotation = 0.f;  // in radians
     bool flipX = false;
     bool visible = true;
+    float tintR = 1.f;
+    float tintG = 1.f;
+    float tintB = 1.f;
+    float tintA = 1.f;
 
     // UV sub-region (for sprite sheets / font atlases)
     float uvLeft = 0.f;

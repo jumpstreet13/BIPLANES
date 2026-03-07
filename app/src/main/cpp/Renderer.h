@@ -7,6 +7,7 @@
 #include "Shader.h"
 
 struct android_app;
+struct ANativeWindow;
 
 class Renderer {
 public:
@@ -57,6 +58,7 @@ private:
     EGLint viewportY_;
     EGLint viewportWidth_;
     EGLint viewportHeight_;
+    ANativeWindow *lastWindow_ = nullptr;
 
     bool shaderNeedsNewProjectionMatrix_;
 

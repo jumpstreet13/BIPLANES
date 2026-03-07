@@ -19,13 +19,17 @@ extern "C" {
 void handle_cmd(android_app *pApp, int32_t cmd) {
     switch (cmd) {
         case APP_CMD_INIT_WINDOW:
-            pApp->userData = new Game(pApp);
+            if (!pApp->userData) {
+                pApp->userData = new Game(pApp);
+            }
             break;
         case APP_CMD_TERM_WINDOW:
+        case APP_CMD_LOST_FOCUS:
+        case APP_CMD_PAUSE:
+        case APP_CMD_STOP:
             if (pApp->userData) {
                 auto *pGame = reinterpret_cast<Game *>(pApp->userData);
-                pApp->userData = nullptr;
-                delete pGame;
+                pGame->onAppBackgrounded();
             }
             break;
         default:
@@ -105,12 +109,18 @@ void android_main(struct android_app *pApp) {
         if (dt > 0.05f) dt = 0.05f;
 
         // Check if any user data is associated. This is assigned in handle_cmd
-        if (pApp->userData) {
+        if (pApp->userData && pApp->window) {
             auto *pGame = reinterpret_cast<Game *>(pApp->userData);
             pGame->handleInput();
             pGame->update(dt);
             pGame->render();
         }
     } while (!pApp->destroyRequested);
+
+    if (pApp->userData) {
+        auto *pGame = reinterpret_cast<Game *>(pApp->userData);
+        pApp->userData = nullptr;
+        delete pGame;
+    }
 }
 }

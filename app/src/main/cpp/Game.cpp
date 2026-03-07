@@ -66,6 +66,13 @@ void Game::loadMenuSprites() {
     initButtonSprite(aiEasyBtn_, btnTex, 0.f, 0.72f, 1.8f, 0.28f);
     initButtonSprite(aiMediumBtn_, btnTex, 0.f, 0.00f, 1.8f, 0.28f);
     initButtonSprite(aiHardBtn_, btnTex, 0.f, -0.72f, 1.8f, 0.28f);
+    hintBg_.init(btnTex, 1.0f, 0.2f);
+    hintBg_.x = 0.f;
+    hintBg_.y = -1.35f;
+    hintBg_.tintR = 0.f;
+    hintBg_.tintG = 0.f;
+    hintBg_.tintB = 0.f;
+    hintBg_.tintA = 0.45f;
 
     // Font texture for button text
     fontTex_ = TextureAsset::loadAsset(am, "font.png");
@@ -74,7 +81,8 @@ void Game::loadMenuSprites() {
 }
 
 void Game::drawText(const Shader &shader, const char *text,
-                    float startX, float y, float charW, float charH) const {
+                    float startX, float y, float charW, float charH,
+                    float tintR, float tintG, float tintB, float tintA) const {
     if (!fontTex_) return;
     int len = (int)strlen(text);
     float cx = startX;
@@ -96,9 +104,114 @@ void Game::drawText(const Shader &shader, const char *text,
         glyph.uvRight  = ((col + 1) * FONT_CELL) / FONT_TEX_W;
         glyph.uvTop    = (row * FONT_CELL) / FONT_TEX_H;
         glyph.uvBottom = ((row + 1) * FONT_CELL) / FONT_TEX_H;
+        glyph.tintR = tintR;
+        glyph.tintG = tintG;
+        glyph.tintB = tintB;
+        glyph.tintA = tintA;
         glyph.draw(shader);
 
         cx += charW * 2.f;
+    }
+}
+
+void Game::drawHintText(const Shader &shader, const char *text,
+                        float y, float charW, float charH) const {
+    int len = (int)strlen(text);
+    float textW = len * charW * 2.f;
+    float startX = -textW / 2.f + charW;
+
+    Sprite bg = hintBg_;
+    bg.y = y;
+    bg.scaleX = textW * 0.5f + charW * 0.55f;
+    bg.scaleY = charH + charH * 0.55f;
+    bg.draw(shader);
+
+    float shadowOffsetX = charW * 0.18f;
+    float shadowOffsetY = charH * 0.18f;
+    drawText(shader, text, startX + shadowOffsetX, y - shadowOffsetY, charW, charH,
+             0.f, 0.f, 0.f, 0.85f);
+    drawText(shader, text, startX, y, charW, charH);
+}
+
+void Game::onAppBackgrounded() {
+    if (state_ == GameState::Playing) {
+        setPauseFromLocalPlayer(true);
+    }
+}
+
+bool Game::isGameplayPaused() const {
+    return localPauseActive_ || remotePauseActive_;
+}
+
+void Game::setPauseFromLocalPlayer(bool paused) {
+    if (localPauseActive_ == paused) return;
+    localPauseActive_ = paused;
+
+    if (pendingMode_ == GameMode::VsBluetooth
+        && btBridge_
+        && btBridge_->isConnected()) {
+        btBridge_->sendControlSignal(paused
+                                     ? BluetoothBridge::ControlSignal::Pause
+                                     : BluetoothBridge::ControlSignal::Resume);
+    }
+}
+
+void Game::leaveMatchToMainMenu(bool notifyRemote) {
+    if (notifyRemote
+        && pendingMode_ == GameMode::VsBluetooth
+        && btBridge_
+        && btBridge_->isConnected()) {
+        btBridge_->sendControlSignal(BluetoothBridge::ControlSignal::EndMatch);
+    }
+
+    if (pendingMode_ == GameMode::VsBluetooth && btBridge_) {
+        btBridge_->disconnect();
+    }
+
+    localPauseActive_ = false;
+    remotePauseActive_ = false;
+    state_ = GameState::MainMenu;
+    sessionInitialized_ = false;
+}
+
+void Game::processBluetoothControlSignals() {
+    if (pendingMode_ != GameMode::VsBluetooth || !btBridge_) return;
+
+    BluetoothBridge::ControlSignal signal = BluetoothBridge::ControlSignal::None;
+    while (btBridge_->pollControlSignal(signal)) {
+        switch (signal) {
+            case BluetoothBridge::ControlSignal::Pause:
+                remotePauseActive_ = true;
+                break;
+            case BluetoothBridge::ControlSignal::Resume:
+                remotePauseActive_ = false;
+                break;
+            case BluetoothBridge::ControlSignal::EndMatch:
+                aout << "BluetoothLobby: Opponent ended the match" << std::endl;
+                leaveMatchToMainMenu(false);
+                return;
+            case BluetoothBridge::ControlSignal::None:
+                break;
+        }
+    }
+}
+
+void Game::handlePauseUiTap(float wx, float wy) {
+    if (!isGameplayPaused()) {
+        if (pointInButton(pauseBtnSprite_, wx, wy)) {
+            setPauseFromLocalPlayer(true);
+        }
+        return;
+    }
+
+    if (remotePauseActive_ && !localPauseActive_) {
+        return;
+    }
+
+    if (pointInButton(pauseContinueBtnSprite_, wx, wy)) {
+        setPauseFromLocalPlayer(false);
+    } else if (pointInButton(pauseEndBtnSprite_, wx, wy)) {
+        leaveMatchToMainMenu(true);
     }
 }
 
@@ -217,16 +330,20 @@ void Game::handleInput() {
             }
             break;
         }
-        case GameState::Playing:
+        case GameState::Playing: {
+            if (touch.screenTapped) {
+                float screenW = (float) renderer_->getWidth();
+                float screenH = (float) renderer_->getHeight();
+                float aspect = renderer_->getAspect();
+                float wx, wy;
+                Utility::screenToWorld(touch.tapX, touch.tapY, screenW, screenH, 2.0f, aspect, wx, wy);
+                handlePauseUiTap(wx, wy);
+            }
             break;
+        }
         case GameState::GameOver: {
             if (touch.screenTapped || touch.upButtonHeld || touch.downButtonHeld) {
-                // Disconnect Bluetooth if it was a BT game
-                if (pendingMode_ == GameMode::VsBluetooth && btBridge_) {
-                    btBridge_->disconnect();
-                }
-                state_ = GameState::MainMenu;
-                sessionInitialized_ = false;
+                leaveMatchToMainMenu(false);
             }
             break;
         }
@@ -267,12 +384,20 @@ void Game::update(float dt) {
         if (!sessionInitialized_) {
             initSession();
         }
-        const auto &touch = inputManager_.getState();
-        bool gameOver = session_.update(dt, touch);
-        if (gameOver) {
-            state_ = GameState::GameOver;
-            winner_ = session_.getWinner();
-            aout << "Game Over! Winner: Player " << winner_ << std::endl;
+        processBluetoothControlSignals();
+        if (state_ != GameState::Playing) {
+            return;
+        }
+        if (!isGameplayPaused()) {
+            const auto &touch = inputManager_.getState();
+            bool gameOver = session_.update(dt, touch);
+            if (gameOver) {
+                state_ = GameState::GameOver;
+                winner_ = session_.getWinner();
+                localPauseActive_ = false;
+                remotePauseActive_ = false;
+                aout << "Game Over! Winner: Player " << winner_ << std::endl;
+            }
         }
     }
 }
@@ -357,9 +482,7 @@ void Game::render() {
                      aiHardBtn_.x - hardW / 2.f + charW, aiHardBtn_.y, charW, charH);
 
             const char *hint = "TAP OUTSIDE TO GO BACK";
-            float hintW = strlen(hint) * charW * 2.f;
-            drawText(renderer_->getShader(), hint,
-                     -hintW / 2.f + charW, -1.35f, charW * 0.65f, charH * 0.65f);
+            drawHintText(renderer_->getShader(), hint, -1.35f, charW * 0.65f, charH * 0.65f);
         }
     }
 
@@ -390,9 +513,7 @@ void Game::render() {
                      lobbyBtn2_.x - tw2 / 2.f + charW, lobbyBtn2_.y, charW, charH);
 
             const char *hint = "TAP OUTSIDE TO GO BACK";
-            float hintW = strlen(hint) * charW * 2.f;
-            drawText(renderer_->getShader(), hint,
-                     -hintW / 2.f + charW, -1.35f, charW * 0.65f, charH * 0.65f);
+            drawHintText(renderer_->getShader(), hint, -1.35f, charW * 0.65f, charH * 0.65f);
         }
     }
 
@@ -403,9 +524,33 @@ void Game::render() {
 
     // Playing — draw UP/DOWN/FIRE buttons
     if (state_ == GameState::Playing && uiSpritesLoaded_) {
-        btnUpSprite_.draw(renderer_->getShader());
-        btnDownSprite_.draw(renderer_->getShader());
-        btnFireSprite_.draw(renderer_->getShader());
+        if (!isGameplayPaused()) {
+            btnUpSprite_.draw(renderer_->getShader());
+            btnDownSprite_.draw(renderer_->getShader());
+            btnFireSprite_.draw(renderer_->getShader());
+            pauseBtnSprite_.draw(renderer_->getShader());
+            drawText(renderer_->getShader(), "PAUSE",
+                     pauseBtnSprite_.x - 0.20f, pauseBtnSprite_.y, 0.036f, 0.048f);
+        } else {
+            pauseDialogBgSprite_.draw(renderer_->getShader());
+
+            if (remotePauseActive_ && !localPauseActive_) {
+                drawText(renderer_->getShader(), "OPPONENT PAUSED",
+                         -0.88f, 0.20f, 0.07f, 0.09f);
+                drawText(renderer_->getShader(), "WAIT FOR RESUME",
+                         -0.88f, -0.22f, 0.07f, 0.09f);
+            } else {
+                pauseContinueBtnSprite_.draw(renderer_->getShader());
+                pauseEndBtnSprite_.draw(renderer_->getShader());
+
+                drawText(renderer_->getShader(), "MATCH PAUSED",
+                         -0.67f, 0.78f, 0.07f, 0.09f);
+                drawText(renderer_->getShader(), "CONTINUE",
+                         -0.52f, pauseContinueBtnSprite_.y, 0.07f, 0.09f);
+                drawText(renderer_->getShader(), "END MATCH",
+                         -0.61f, pauseEndBtnSprite_.y, 0.07f, 0.09f);
+            }
+        }
     }
 
     // Game Over banner
@@ -460,15 +605,21 @@ void Game::loadLobbySprites() {
 void Game::initSession() {
     auto *assetManager = app_->activity->assetManager;
     float aspect = renderer_->getAspect();
+    float screenHalfW = 2.0f * aspect;
     session_.init(assetManager, aspect, pendingMode_, aiDifficulty_);
     session_.reset();
     sessionInitialized_ = true;
+    localPauseActive_ = false;
+    remotePauseActive_ = false;
+
+    if (!fontTex_) {
+        fontTex_ = TextureAsset::loadAsset(assetManager, "font.png");
+    }
 
     // Load UI button sprites once
     if (!uiSpritesLoaded_) {
         auto btnUpTex   = TextureAsset::loadAsset(assetManager, "btn_up.png");
         auto btnDownTex = TextureAsset::loadAsset(assetManager, "btn_down.png");
-        float screenHalfW = 2.0f * aspect;
         btnUpSprite_.init(btnUpTex, 0.35f, 0.35f);
         btnUpSprite_.x = -screenHalfW + 0.45f;
         btnUpSprite_.y = -1.55f;
@@ -480,8 +631,31 @@ void Game::initSession() {
         btnFireSprite_.init(fireBtnTex, 0.35f, 0.35f);
         btnFireSprite_.x = screenHalfW - 0.45f;
         btnFireSprite_.y = -1.55f + 0.65f;  // above DOWN button with gap
+
+        auto menuBtnTex = TextureAsset::loadAsset(assetManager, "button.png");
+        pauseBtnSprite_.init(menuBtnTex, 0.42f, 0.16f);
+        pauseBtnSprite_.y = 1.55f;
+
+        pauseDialogBgSprite_.init(menuBtnTex, 1.95f, 1.1f);
+        pauseDialogBgSprite_.x = 0.f;
+        pauseDialogBgSprite_.y = 0.f;
+        pauseDialogBgSprite_.tintR = 0.f;
+        pauseDialogBgSprite_.tintG = 0.f;
+        pauseDialogBgSprite_.tintB = 0.f;
+        pauseDialogBgSprite_.tintA = 0.78f;
+
+        pauseContinueBtnSprite_.init(menuBtnTex, 1.25f, 0.24f);
+        pauseContinueBtnSprite_.x = 0.f;
+        pauseContinueBtnSprite_.y = 0.20f;
+
+        pauseEndBtnSprite_.init(menuBtnTex, 1.25f, 0.24f);
+        pauseEndBtnSprite_.x = 0.f;
+        pauseEndBtnSprite_.y = -0.38f;
+
         uiSpritesLoaded_ = true;
     }
+    pauseBtnSprite_.x = screenHalfW - 0.48f;
+    pauseBtnSprite_.y = 1.55f;
 
     // Load Game Over sprites once
     if (!gameoverSpritesLoaded_) {

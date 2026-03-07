@@ -27,6 +27,7 @@ void Sprite::draw(const Shader &shader) const {
     float modelMatrix[16];
     Utility::buildTRSMatrix(modelMatrix, x, y, rotation, scaleX, scaleY);
     shader.setModelMatrix(modelMatrix);
+    shader.setTintColor(tintR, tintG, tintB, tintA);
 
     // Apply UV region and flipX
     std::vector<Vertex> verts = vertices_;

@@ -21,6 +21,7 @@ public:
     void handleInput();
     void update(float dt);
     void render();
+    void onAppBackgrounded();
 
 private:
     void initSession();
@@ -33,7 +34,16 @@ private:
                           float x, float y, float width, float height) const;
     bool pointInButton(const Sprite &button, float x, float y) const;
     void drawText(const Shader &shader, const char *text,
-                  float startX, float y, float charW, float charH) const;
+                  float startX, float y, float charW, float charH,
+                  float tintR = 1.f, float tintG = 1.f,
+                  float tintB = 1.f, float tintA = 1.f) const;
+    void drawHintText(const Shader &shader, const char *text,
+                      float y, float charW, float charH) const;
+    bool isGameplayPaused() const;
+    void setPauseFromLocalPlayer(bool paused);
+    void handlePauseUiTap(float wx, float wy);
+    void processBluetoothControlSignals();
+    void leaveMatchToMainMenu(bool notifyRemote);
 
     android_app *app_;
     std::unique_ptr<Renderer> renderer_;
@@ -52,7 +62,13 @@ private:
     Sprite btnUpSprite_;
     Sprite btnDownSprite_;
     Sprite btnFireSprite_;
+    Sprite pauseBtnSprite_;
+    Sprite pauseDialogBgSprite_;
+    Sprite pauseContinueBtnSprite_;
+    Sprite pauseEndBtnSprite_;
     bool uiSpritesLoaded_ = false;
+    bool localPauseActive_ = false;
+    bool remotePauseActive_ = false;
 
     // Splash screen
     Sprite splashLogo_;
@@ -66,6 +82,7 @@ private:
     Sprite aiEasyBtn_;
     Sprite aiMediumBtn_;
     Sprite aiHardBtn_;
+    Sprite hintBg_;
     std::shared_ptr<TextureAsset> fontTex_;  // font.png
     bool menuSpritesLoaded_ = false;
     float menuAnimTimer_ = 0.f;

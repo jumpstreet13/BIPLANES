@@ -37,11 +37,12 @@ precision mediump float;
 in vec2 fragUV;
 
 uniform sampler2D uTexture;
+uniform vec4 uTint;
 
 out vec4 outColor;
 
 void main() {
-    outColor = texture(uTexture, fragUV);
+    outColor = texture(uTexture, fragUV) * uTint;
 }
 )fragment";
 
@@ -147,6 +148,7 @@ void Renderer::initRenderer() {
     surface_ = surface;
     context_ = context;
     config_ = config;
+    lastWindow_ = app_->window;
 
     width_ = -1;
     height_ = -1;
@@ -160,6 +162,7 @@ void Renderer::initRenderer() {
     assert(shader_);
 
     shader_->activate();
+    shader_->setTintColor(1.f, 1.f, 1.f, 1.f);
 
     glClearColor(CORNFLOWER_BLUE);
     glEnable(GL_BLEND);
@@ -167,6 +170,26 @@ void Renderer::initRenderer() {
 }
 
 void Renderer::updateRenderArea() {
+    if (!app_->window) {
+        return;
+    }
+
+    if (app_->window != lastWindow_) {
+        aout << "Renderer: window changed, recreating EGL surface" << std::endl;
+        eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (surface_ != EGL_NO_SURFACE) {
+            eglDestroySurface(display_, surface_);
+        }
+        ANativeWindow_setBuffersGeometry(app_->window, 0, 0, nativeFormat_);
+        surface_ = eglCreateWindowSurface(display_, config_, app_->window, nullptr);
+        auto madeCurrent = eglMakeCurrent(display_, surface_, surface_, context_);
+        assert(madeCurrent);
+        lastWindow_ = app_->window;
+        width_ = -1;
+        height_ = -1;
+        shaderNeedsNewProjectionMatrix_ = true;
+    }
+
     EGLint surfW, surfH;
     eglQuerySurface(display_, surface_, EGL_WIDTH, &surfW);
     eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfH);

@@ -64,6 +64,7 @@ public:
     void setProjectionMatrix(float *projectionMatrix) const;
 
     void setModelMatrix(float *m) const;
+    void setTintColor(float r, float g, float b, float a) const;
 
     GLint getPositionAttribute() const { return position_; }
     GLint getUvAttribute() const { return uv_; }
@@ -89,18 +90,21 @@ private:
             GLint position,
             GLint uv,
             GLint projectionMatrix,
-            GLint modelMatrix)
+            GLint modelMatrix,
+            GLint tintColor)
             : program_(program),
               position_(position),
               uv_(uv),
               projectionMatrix_(projectionMatrix),
-              modelMatrix_(modelMatrix) {}
+              modelMatrix_(modelMatrix),
+              tintColor_(tintColor) {}
 
     GLuint program_;
     GLint position_;
     GLint uv_;
     GLint projectionMatrix_;
     GLint modelMatrix_;
+    GLint tintColor_;
 };
 
 #endif //ANDROIDGLINVESTIGATIONS_SHADER_H

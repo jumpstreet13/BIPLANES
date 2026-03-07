@@ -17,6 +17,13 @@ struct BluetoothState {
 
 class BluetoothBridge {
 public:
+    enum class ControlSignal : uint8_t {
+        None = 0,
+        Pause = 1,
+        Resume = 2,
+        EndMatch = 3
+    };
+
     BluetoothBridge(JNIEnv* env, jobject activity);
     ~BluetoothBridge();
 
@@ -27,6 +34,8 @@ public:
     // Poll latest received state from remote player (non-blocking)
     // Returns true if new data is available
     bool pollReceivedState(BluetoothState& outState);
+    bool pollControlSignal(ControlSignal& outSignal);
+    void sendControlSignal(ControlSignal signal);
 
     bool isConnected() const;
     bool isReady() const;
@@ -52,4 +61,6 @@ private:
     mutable std::mutex mutex_;
     BluetoothState     latestState_;
     bool               hasNewState_ = false;
+    ControlSignal      latestControlSignal_ = ControlSignal::None;
+    bool               hasNewControlSignal_ = false;
 };
