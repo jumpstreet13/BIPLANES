@@ -44,6 +44,12 @@ class BluetoothManager(private val activity: GameActivity) {
         }
     }
 
+    private enum class LocalRole {
+        Unknown,
+        Host,
+        Client
+    }
+
     private data class DiscoveredHost(
         val roomName: String,
         val device: BluetoothDevice
@@ -64,6 +70,7 @@ class BluetoothManager(private val activity: GameActivity) {
     private val discoveredHosts = mutableListOf<DiscoveredHost>()
     private var originalAdapterName: String? = null
     private var hostedRoomName: String? = null
+    private var localRole: LocalRole = LocalRole.Unknown
 
     init {
         activeInstance = this
@@ -112,6 +119,7 @@ class BluetoothManager(private val activity: GameActivity) {
         connectedSocket = null
         inputStream = null
         outputStream = null
+        localRole = LocalRole.Unknown
         restoreAdapterName()
     }
 
@@ -193,6 +201,7 @@ class BluetoothManager(private val activity: GameActivity) {
     private fun startHostingRoom(roomName: String) {
         disconnect()
         hostedRoomName = roomName
+        localRole = LocalRole.Host
         requestDiscoverable()
         advertiseRoomName(roomName)
         showToast("Hosting room \"$roomName\"")
@@ -265,6 +274,7 @@ class BluetoothManager(private val activity: GameActivity) {
     @SuppressLint("MissingPermission")
     private fun connectToHost(host: DiscoveredHost) {
         disconnect()
+        localRole = LocalRole.Client
         showToast("Connecting to \"${host.roomName}\"")
 
         Thread {
@@ -294,8 +304,16 @@ class BluetoothManager(private val activity: GameActivity) {
         outputStream = socket.outputStream
         running.set(true)
         restoreAdapterName()
-        showToast("Connected")
+        showToast(roleToastMessage())
         startReceiving()
+    }
+
+    private fun roleToastMessage(): String {
+        return when (localRole) {
+            LocalRole.Host -> "You control the BLUE plane"
+            LocalRole.Client -> "You control the RED plane"
+            LocalRole.Unknown -> "Connected"
+        }
     }
 
     private fun startReceiving() {
