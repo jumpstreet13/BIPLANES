@@ -26,6 +26,12 @@ add_library(byplanes SHARED
         BluetoothBridge.cpp
         SoundEngine.cpp)
 
+if(ANDROID)
+    target_link_options(byplanes PRIVATE
+            "-Wl,-z,max-page-size=16384"
+            "-Wl,-z,common-page-size=16384")
+endif()
+
 # Searches for a package provided by the game activity dependency
 find_package(game-activity REQUIRED CONFIG)
 
