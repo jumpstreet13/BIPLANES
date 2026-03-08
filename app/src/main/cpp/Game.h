@@ -35,6 +35,10 @@ private:
                           const std::shared_ptr<TextureAsset> &texture,
                           float x, float y, float width, float height) const;
     bool pointInButton(const Sprite &button, float x, float y) const;
+    void drawCenteredText(const Shader &shader, const char *text,
+                          float centerX, float y, float charW, float charH,
+                          float tintR = 1.f, float tintG = 1.f,
+                          float tintB = 1.f, float tintA = 1.f) const;
     void drawText(const Shader &shader, const char *text,
                   float startX, float y, float charW, float charH,
                   float tintR = 1.f, float tintG = 1.f,
@@ -48,6 +52,9 @@ private:
     void leaveMatchToMainMenu(bool notifyRemote);
     void enqueueRemoteBluetoothInput(const BluetoothInputState &input);
     BluetoothInputState consumeRemoteBluetoothInputForStep();
+    void startGameplayCountdown();
+    void stopGameplayCountdown();
+    bool isGameplayCountdownActive() const;
 
     android_app *app_;
     std::unique_ptr<Renderer> renderer_;
@@ -59,9 +66,12 @@ private:
     bool sessionInitialized_ = false;
 
     int winner_ = 1;
-    Sprite gameoverP1Sprite_;
-    Sprite gameoverP2Sprite_;
-    bool gameoverSpritesLoaded_ = false;
+    Sprite gameOverBackdropSprite_;
+    Sprite gameOverBannerFrameSprite_;
+    Sprite gameOverBannerFillSprite_;
+    Sprite gameOverOkFrameSprite_;
+    Sprite gameOverOkFillSprite_;
+    bool gameOverUiLoaded_ = false;
 
     Sprite btnUpSprite_;
     Sprite btnDownSprite_;
@@ -70,9 +80,13 @@ private:
     Sprite pauseDialogBgSprite_;
     Sprite pauseContinueBtnSprite_;
     Sprite pauseEndBtnSprite_;
+    Sprite gameplayCountdownBackdropSprite_;
     bool uiSpritesLoaded_ = false;
     bool localPauseActive_ = false;
     bool remotePauseActive_ = false;
+    bool opponentLeftDialogActive_ = false;
+    bool gameplayCountdownActive_ = false;
+    float gameplayCountdownRemaining_ = 0.f;
 
     // Splash screen
     Sprite splashLogo_;
