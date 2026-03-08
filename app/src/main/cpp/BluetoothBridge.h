@@ -59,10 +59,13 @@ public:
     bool pollReceivedInputState(BluetoothInputState& outInput);
     bool pollControlSignal(ControlSignal& outSignal);
     void sendControlSignal(ControlSignal signal);
+    void sendControlSignalAndDisconnect(ControlSignal signal);
 
     bool isConnected() const;
     bool isReady() const;
     bool isHostRole() const;
+    void showCurrentRoleToast();
+    void dismissConnectionDialogs();
     void startAdvertising();
     void startScanning();
     void disconnect();
@@ -76,8 +79,11 @@ private:
     JNIEnv*    env_;
     jobject    btManager_;      // global ref to BluetoothManager Kotlin object
     jmethodID  sendMethod_;
+    jmethodID  sendAndDisconnectMethod_;
     jmethodID  isConnectedMethod_;
     jmethodID  isHostMethod_;
+    jmethodID  showRoleToastMethod_;
+    jmethodID  dismissDialogsMethod_;
     jmethodID  startAdvMethod_;
     jmethodID  startScanMethod_;
     jmethodID  disconnectMethod_;

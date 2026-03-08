@@ -18,11 +18,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
-import android.text.InputFilter
-import android.text.InputType
 import android.util.Log
 import android.widget.ArrayAdapter
-import android.widget.EditText
 import android.widget.ListView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -94,6 +91,7 @@ class BluetoothManager(private val activity: GameActivity) {
     private val running = AtomicBoolean(false)
     private val connectionSessionId = AtomicInteger(0)
     private val sendLock = Object()
+    private val outputWriteLock = Object()
     private val pendingControlPackets = ArrayDeque<ByteArray>()
     private var pendingMatchPacket: ByteArray? = null
     private val pendingInputPackets = ArrayDeque<ByteArray>()
@@ -140,7 +138,7 @@ class BluetoothManager(private val activity: GameActivity) {
                 if (localRole == LocalRole.Host || serverSocket != null || roomInfoServerSocket != null || isConnected()) {
                     disconnect()
                 }
-                showHostRoomDialog()
+                startHostingRoom(resolveHostedRoomName())
             }
         }
     }
@@ -167,9 +165,47 @@ class BluetoothManager(private val activity: GameActivity) {
         }
     }
 
+    @Synchronized
+    fun sendPacketAndDisconnect(data: ByteArray) {
+        if (data.isEmpty()) {
+            disconnect()
+            return
+        }
+
+        val packet = framePacket(data.copyOf())
+        val stream = outputStream
+        if (!running.get() || stream == null) {
+            disconnect()
+            return
+        }
+
+        Thread({
+            try {
+                synchronized(outputWriteLock) {
+                    stream.write(packet)
+                    stream.flush()
+                }
+            } catch (_: Exception) {
+            } finally {
+                disconnect()
+            }
+        }, "ByPlanesBtSendAndDisconnect").start()
+    }
+
     fun isConnected(): Boolean = connectedSocket?.isConnected == true && running.get()
 
     fun isHostRole(): Boolean = localRole == LocalRole.Host
+
+    fun showCurrentRoleToast() {
+        showToast(roleToastMessage())
+    }
+
+    fun dismissConnectionDialogs() {
+        dismissDialog(hostDialog)
+        dismissDialog(joinDialog)
+        hostDialog = null
+        joinDialog = null
+    }
 
     fun disconnect() {
         hostingSessionId.incrementAndGet()
@@ -278,35 +314,71 @@ class BluetoothManager(private val activity: GameActivity) {
         }
     }
 
-    private fun showHostRoomDialog() {
+    private fun showHostWaitingDialog(hostName: String) {
         dismissDialog(hostDialog)
 
-        val input = EditText(activity).apply {
-            hint = "Room name"
-            inputType = InputType.TYPE_CLASS_TEXT
-            filters = arrayOf(InputFilter.LengthFilter(20))
-            setText(hostedRoomName ?: "")
-            setSelection(text.length)
-        }
-
         hostDialog = AlertDialog.Builder(activity)
-            .setTitle("Host room")
-            .setView(input)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Host") { _, _ ->
-                val roomName = input.text.toString().trim().ifEmpty { "Room" }
-                startHostingRoom(roomName)
-            }
+            .setTitle("Name of your device: $hostName")
+            .setMessage("Connecting...\nWaiting for player to connect")
+            .setCancelable(false)
+            .setNegativeButton("STOP") { _, _ -> disconnect() }
             .create()
         hostDialog?.show()
+    }
+
+    private fun showClientConnectingDialog(hostName: String) {
+        dismissDialog(joinDialog)
+        joinDialog = AlertDialog.Builder(activity)
+            .setTitle(hostName)
+            .setMessage("Connecting...")
+            .setCancelable(false)
+            .setNegativeButton("STOP") { _, _ -> disconnect() }
+            .create()
+        joinDialog?.show()
+    }
+
+    private fun updateConnectionEstablishedDialog() {
+        activity.runOnUiThread {
+            when (localRole) {
+                LocalRole.Host -> {
+                    hostDialog?.setTitle("Name of your device: ${hostedRoomName ?: resolveHostedRoomName()}")
+                    hostDialog?.setMessage("Connection - match starts soon")
+                }
+
+                LocalRole.Client -> {
+                    joinDialog?.setTitle("Connection")
+                    joinDialog?.setMessage("Connection - match starts soon")
+                }
+
+                LocalRole.Unknown -> Unit
+            }
+        }
+    }
+
+    private fun sanitizeDisplayDeviceName(rawName: String?): String? {
+        val trimmed = rawName?.trim()?.takeUnless { it.isBlank() } ?: return null
+        return if (trimmed.startsWith(ROOM_PREFIX)) null else trimmed
+    }
+
+    private fun resolveSystemDeviceName(): String? {
+        val resolver = activity.contentResolver
+        val candidates = listOf(
+            Settings.Global.getString(resolver, "device_name"),
+            Settings.Secure.getString(resolver, "device_name")
+        )
+        return candidates.firstNotNullOfOrNull { sanitizeDisplayDeviceName(it) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun resolveHostedRoomName(): String {
+        resolveSystemDeviceName()?.let { return it }
+        sanitizeDisplayDeviceName(btAdapter?.name)?.let { return it }
+        return Build.MODEL?.trim().takeUnless { it.isNullOrBlank() } ?: "Bluetooth Host"
     }
 
     @SuppressLint("MissingPermission")
     private fun startHostingRoom(roomName: String, discoverableChecked: Boolean = false) {
         val adapter = btAdapter
-        if (!discoverableChecked) {
-            advertiseRoomName(roomName)
-        }
         if (!discoverableChecked && adapter != null
             && adapter.scanMode != BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE
         ) {
@@ -319,9 +391,8 @@ class BluetoothManager(private val activity: GameActivity) {
         localRole = LocalRole.Host
         advertiseRoomName(roomName)
         adapter?.cancelDiscovery()
-        showToast("Hosting room \"$roomName\"")
+        showHostWaitingDialog(roomName)
         val sessionId = hostingSessionId.incrementAndGet()
-        startRoomInfoServer(roomName, sessionId)
 
         Thread {
             var lastError: Exception? = null
@@ -353,6 +424,7 @@ class BluetoothManager(private val activity: GameActivity) {
 
             if (hostingSessionId.get() == sessionId && localRole == LocalRole.Host && !isConnected()) {
                 showToast(describeBluetoothError("Unable to host room", lastError ?: IllegalStateException("No server socket available")))
+                disconnect()
             }
         }.start()
     }
@@ -364,7 +436,7 @@ class BluetoothManager(private val activity: GameActivity) {
         resetJoinDebugState()
 
         val title = TextView(activity).apply {
-            text = "Nearby rooms"
+            text = "Nearby devices"
             textSize = 18f
             setPadding(24, 16, 24, 12)
         }
@@ -374,7 +446,7 @@ class BluetoothManager(private val activity: GameActivity) {
         listAdapter = ArrayAdapter(
             activity,
             android.R.layout.simple_list_item_1,
-            mutableListOf("Searching for hosts...")
+            mutableListOf("Searching for devices...")
         )
         listView.adapter = listAdapter
         listView.setOnItemClickListener { _, _, position, _ ->
@@ -398,7 +470,7 @@ class BluetoothManager(private val activity: GameActivity) {
         }
 
         joinDialog = AlertDialog.Builder(activity)
-            .setTitle("Join room")
+            .setTitle("Join device")
             .setView(container)
             .setNegativeButton("Cancel") { _, _ -> stopDiscovery() }
             .create()
@@ -415,7 +487,7 @@ class BluetoothManager(private val activity: GameActivity) {
     private fun connectToHost(host: DiscoveredHost) {
         disconnect()
         localRole = LocalRole.Client
-        showToast("Connecting to \"${host.roomName}\"")
+        showClientConnectingDialog(host.roomName)
 
         Thread {
             btAdapter?.cancelDiscovery()
@@ -440,6 +512,8 @@ class BluetoothManager(private val activity: GameActivity) {
             }
 
             if (localRole == LocalRole.Client && !isConnected()) {
+                dismissDialog(joinDialog)
+                joinDialog = null
                 showToast(
                     describeBluetoothError(
                         "Unable to connect to \"${host.roomName}\"",
@@ -469,7 +543,7 @@ class BluetoothManager(private val activity: GameActivity) {
             clearPendingOutboundPacketsLocked()
         }
         restoreAdapterName()
-        showToast(roleToastMessage())
+        updateConnectionEstablishedDialog()
         startSending(sessionId)
         startReceiving(sessionId)
     }
@@ -501,8 +575,16 @@ class BluetoothManager(private val activity: GameActivity) {
                 } ?: continue
 
                 try {
-                    val stream = outputStream ?: break
-                    stream.write(framePacket(packet))
+                    var missingStream = false
+                    synchronized(outputWriteLock) {
+                        val stream = outputStream
+                        if (stream == null) {
+                            missingStream = true
+                        } else {
+                            stream.write(framePacket(packet))
+                        }
+                    }
+                    if (missingStream) break
                 } catch (_: Exception) {
                     break
                 }
@@ -648,7 +730,7 @@ class BluetoothManager(private val activity: GameActivity) {
                         if (joinDialog?.isShowing == true && !isConnected()) {
                             if (visibleHosts.isEmpty()) {
                                 listAdapter?.clear()
-                                listAdapter?.add("No hosts found yet")
+                                listAdapter?.add("No devices found yet")
                                 listAdapter?.notifyDataSetChanged()
                             }
                             mainHandler.removeCallbacks(restartDiscoveryRunnable)
@@ -705,21 +787,11 @@ class BluetoothManager(private val activity: GameActivity) {
 
     @SuppressLint("MissingPermission")
     private fun advertiseRoomName(roomName: String) {
-        val adapter = btAdapter ?: return
-        if (originalAdapterName == null) {
-            originalAdapterName = adapter.name
-        }
         hostedRoomName = roomName
-        adapter.name = "$ROOM_PREFIX$roomName"
     }
 
     @SuppressLint("MissingPermission")
     private fun restoreAdapterName() {
-        val adapter = btAdapter ?: return
-        val original = originalAdapterName
-        if (hostedRoomName != null && original != null && adapter.name != original) {
-            adapter.name = original
-        }
         hostedRoomName = null
     }
 
@@ -749,82 +821,32 @@ class BluetoothManager(private val activity: GameActivity) {
             updateJoinDebugView()
         }
         val existing = discoveredHosts.firstOrNull { it.device.address == device.address }
-        if (advertisedName != null && advertisedName.startsWith(ROOM_PREFIX)) {
-            val roomName = resolveRoomName(advertisedName)
-            if (existing != null) {
-                existing.roomName = roomName
-                existing.isVerifiedHost = true
-                existing.isChecking = false
-                existing.hasExplicitRoomName = true
-                refreshDiscoveredList()
-            } else {
-                addDiscoveredHost(
-                    device = device,
-                    advertisedName = advertisedName,
-                    isVerifiedHost = true,
-                    isChecking = false,
-                    hasExplicitRoomName = true
-                )
-            }
-            return
-        }
-
         if (existing == null) {
             addDiscoveredHost(
                 device = device,
                 advertisedName = advertisedName,
-                isVerifiedHost = false,
-                isChecking = true,
-                hasExplicitRoomName = false
+                isVerifiedHost = true,
+                isChecking = false,
+                hasExplicitRoomName = true
             )
         } else {
-            if (!advertisedName.isNullOrBlank() && !existing.isVerifiedHost) {
-                existing.roomName = resolveRoomName(advertisedName)
-            }
-            existing.isChecking = true
+            existing.roomName = resolveRoomName(advertisedName ?: device.name)
+            existing.isChecking = false
+            existing.isVerifiedHost = true
+            existing.hasExplicitRoomName = true
             refreshDiscoveredList()
-        }
-
-        if (pendingServiceChecks.putIfAbsent(device.address, device) == null) {
-            joinUuidChecksStarted += 1
-            joinLastEvent = "checking UUID ${device.address.takeLast(5)}"
-            updateJoinDebugView()
-            device.fetchUuidsWithSdp()
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun onDeviceUuidsResolved(device: BluetoothDevice, uuids: Array<ParcelUuid>) {
-        pendingServiceChecks.remove(device.address)
-        joinUuidChecksResolved += 1
-        joinLastEvent = "UUID resolved ${device.address.takeLast(5)}"
         val existing = discoveredHosts.firstOrNull { it.device.address == device.address }
-        val isHost = uuids.any { it.uuid == SERVICE_UUID }
-        val explicitRoomName = resolveExplicitRoomName(device.name)
-
         if (existing != null) {
+            existing.roomName = resolveRoomName(device.name)
             existing.isChecking = false
-            existing.isVerifiedHost = existing.isVerifiedHost || isHost
-            if (!explicitRoomName.isNullOrBlank()) {
-                existing.roomName = explicitRoomName
-                existing.hasExplicitRoomName = true
-            } else if (isHost && !existing.hasExplicitRoomName) {
-                existing.roomName = "Loading room..."
-                requestRoomNameIfNeeded(existing)
-            }
+            existing.isVerifiedHost = true
+            existing.hasExplicitRoomName = true
             refreshDiscoveredList()
-            return
-        }
-
-        val host = addDiscoveredHost(
-            device = device,
-            advertisedName = device.name,
-            isVerifiedHost = isHost,
-            isChecking = false,
-            hasExplicitRoomName = !explicitRoomName.isNullOrBlank()
-        )
-        if (isHost && !host.hasExplicitRoomName) {
-            requestRoomNameIfNeeded(host)
         }
     }
 
@@ -838,29 +860,14 @@ class BluetoothManager(private val activity: GameActivity) {
         }
 
         bondedDevices.forEach { device ->
-            val cachedUuids = device.uuids.orEmpty()
             val cachedName = device.name
-            val isHostByName = cachedName?.startsWith(ROOM_PREFIX) == true
-            val isHostByUuid = cachedUuids.any { it.uuid == SERVICE_UUID }
-            val isVerifiedHost = isHostByName || isHostByUuid
-
-            val host = addDiscoveredHost(
+            addDiscoveredHost(
                 device = device,
                 advertisedName = cachedName,
-                isVerifiedHost = isVerifiedHost,
-                isChecking = !isVerifiedHost,
-                hasExplicitRoomName = isHostByName
+                isVerifiedHost = true,
+                isChecking = false,
+                hasExplicitRoomName = true
             )
-            if (isVerifiedHost && !host.hasExplicitRoomName) {
-                requestRoomNameIfNeeded(host)
-            }
-
-            if (!isVerifiedHost && pendingServiceChecks.putIfAbsent(device.address, device) == null) {
-                joinUuidChecksStarted += 1
-                joinLastEvent = "checking bonded ${device.address.takeLast(5)}"
-                updateJoinDebugView()
-                device.fetchUuidsWithSdp()
-            }
         }
     }
 
@@ -872,20 +879,14 @@ class BluetoothManager(private val activity: GameActivity) {
         isChecking: Boolean,
         hasExplicitRoomName: Boolean
     ): DiscoveredHost {
-        val resolvedRoomName = when {
-            hasExplicitRoomName -> resolveRoomName(advertisedName ?: device.name)
-            isVerifiedHost -> "Loading room..."
-            else -> resolveRoomName(advertisedName ?: device.name)
-        }
+        val resolvedRoomName = resolveRoomName(advertisedName ?: device.name)
         val existing = discoveredHosts.firstOrNull { it.device.address == device.address }
         if (existing != null) {
-            if (hasExplicitRoomName || !existing.hasExplicitRoomName) {
-                existing.roomName = resolvedRoomName
-            }
-            existing.isVerifiedHost = existing.isVerifiedHost || isVerifiedHost
+            existing.roomName = resolvedRoomName
+            existing.isVerifiedHost = true
             existing.isChecking = isChecking
             existing.isBonded = existing.isBonded || device.bondState == BluetoothDevice.BOND_BONDED
-            existing.hasExplicitRoomName = existing.hasExplicitRoomName || hasExplicitRoomName
+            existing.hasExplicitRoomName = true
             refreshDiscoveredList()
             return existing
         } else {
@@ -904,28 +905,24 @@ class BluetoothManager(private val activity: GameActivity) {
     }
 
     private fun resolveExplicitRoomName(rawName: String?): String? {
-        if (rawName.isNullOrBlank() || !rawName.startsWith(ROOM_PREFIX)) return null
-        return rawName.removePrefix(ROOM_PREFIX).ifBlank { "Room" }
+        return sanitizeDisplayDeviceName(rawName)
     }
 
     private fun resolveRoomName(rawName: String?): String {
-        if (rawName.isNullOrBlank()) return "Nearby device"
-        if (rawName.startsWith(ROOM_PREFIX)) {
-            return rawName.removePrefix(ROOM_PREFIX).ifBlank { "Room" }
-        }
-        return rawName
+        return sanitizeDisplayDeviceName(rawName)
+            ?: rawName?.removePrefix(ROOM_PREFIX)?.trim()?.takeUnless { it.isBlank() }
+            ?: "Bluetooth device"
     }
 
     private fun refreshDiscoveredList() {
         visibleHosts.clear()
         visibleHosts.addAll(
             discoveredHosts
-                .filter { it.isVerifiedHost }
                 .sortedBy { it.roomName.lowercase() }
         )
         listAdapter?.clear()
         if (visibleHosts.isEmpty()) {
-            listAdapter?.add("Searching for hosts...")
+            listAdapter?.add("Searching for devices...")
             listAdapter?.notifyDataSetChanged()
             updateJoinDebugView()
             return
@@ -940,66 +937,6 @@ class BluetoothManager(private val activity: GameActivity) {
 
     private fun formatDiscoveredHost(host: DiscoveredHost): String {
         return host.roomName
-    }
-
-    private fun requestRoomNameIfNeeded(host: DiscoveredHost) {
-        if (host.hasExplicitRoomName) return
-        if (!pendingRoomNameChecks.add(host.device.address)) return
-
-        Thread {
-            val roomName = fetchRoomNameFromHost(host.device)
-            activity.runOnUiThread {
-                pendingRoomNameChecks.remove(host.device.address)
-                val existing = discoveredHosts.firstOrNull { it.device.address == host.device.address } ?: return@runOnUiThread
-                if (!roomName.isNullOrBlank()) {
-                    existing.roomName = roomName
-                    existing.hasExplicitRoomName = true
-                    refreshDiscoveredList()
-                } else if (existing.isVerifiedHost && !existing.hasExplicitRoomName && joinDialog?.isShowing == true) {
-                    existing.roomName = "Loading room..."
-                    refreshDiscoveredList()
-                    mainHandler.postDelayed({ requestRoomNameIfNeeded(existing) }, 450L)
-                    return@runOnUiThread
-                }
-                refreshDiscoveredList()
-            }
-        }.start()
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun fetchRoomNameFromHost(device: BluetoothDevice): String? {
-        repeat(4) { attempt ->
-            for (mode in listOf(SocketMode.Insecure, SocketMode.Secure)) {
-                var socket: BluetoothSocket? = null
-                try {
-                    socket = createClientSocket(device, ROOM_INFO_UUID, mode)
-                    socket.connect()
-                    val bytes = ByteArrayOutputStream()
-                    val buffer = ByteArray(128)
-                    val input = socket.inputStream ?: continue
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read <= 0) break
-                        bytes.write(buffer, 0, read)
-                        if (bytes.size() >= 128) break
-                    }
-                    val roomName = bytes.toByteArray().toString(Charsets.UTF_8).trim()
-                    if (roomName.isNotBlank()) {
-                        return roomName
-                    }
-                } catch (_: Exception) {
-                } finally {
-                    try {
-                        socket?.close()
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-            if (attempt < 3) {
-                Thread.sleep(250L)
-            }
-        }
-        return null
     }
 
     private fun resetJoinDebugState() {
@@ -1266,9 +1203,9 @@ class BluetoothManager(private val activity: GameActivity) {
         return "$prefix: $shortened"
     }
 
-    private fun showToast(message: String) {
+    private fun showToast(message: String, duration: Int = Toast.LENGTH_SHORT) {
         activity.runOnUiThread {
-            Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(activity, message, duration).show()
         }
     }
 

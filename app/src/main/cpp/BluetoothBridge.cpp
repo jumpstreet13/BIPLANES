@@ -194,8 +194,11 @@ BluetoothBridge::BluetoothBridge(JNIEnv* env, jobject activity)
     env->DeleteLocalRef(localRef);
 
     sendMethod_        = env->GetMethodID(btClass, "sendPacket", "([B)V");
+    sendAndDisconnectMethod_ = env->GetMethodID(btClass, "sendPacketAndDisconnect", "([B)V");
     isConnectedMethod_ = env->GetMethodID(btClass, "isConnected", "()Z");
     isHostMethod_      = env->GetMethodID(btClass, "isHostRole", "()Z");
+    showRoleToastMethod_ = env->GetMethodID(btClass, "showCurrentRoleToast", "()V");
+    dismissDialogsMethod_ = env->GetMethodID(btClass, "dismissConnectionDialogs", "()V");
     startAdvMethod_    = env->GetMethodID(btClass, "startAdvertising", "()V");
     startScanMethod_   = env->GetMethodID(btClass, "startScanning", "()V");
     disconnectMethod_  = env->GetMethodID(btClass, "disconnect", "()V");
@@ -209,8 +212,9 @@ BluetoothBridge::BluetoothBridge(JNIEnv* env, jobject activity)
         return;
     }
 
-    initialized_ = btManager_ && sendMethod_ && isConnectedMethod_ &&
-                   isHostMethod_ && startAdvMethod_ && startScanMethod_ &&
+    initialized_ = btManager_ && sendMethod_ && sendAndDisconnectMethod_ && isConnectedMethod_ &&
+                   isHostMethod_ && showRoleToastMethod_ && dismissDialogsMethod_ &&
+                   startAdvMethod_ && startScanMethod_ &&
                    disconnectMethod_;
     if (!initialized_) {
         aout << "BluetoothBridge: BluetoothManager method lookup returned null" << std::endl;
@@ -302,6 +306,21 @@ void BluetoothBridge::sendControlSignal(ControlSignal signal) {
     env_->DeleteLocalRef(arr);
 }
 
+void BluetoothBridge::sendControlSignalAndDisconnect(ControlSignal signal) {
+    if (signal == ControlSignal::None) return;
+    if (!btManager_ || !sendAndDisconnectMethod_) {
+        sendControlSignal(signal);
+        disconnect();
+        return;
+    }
+
+    uint8_t packet[1] = { static_cast<uint8_t>(signal) };
+    jbyteArray arr = env_->NewByteArray(1);
+    env_->SetByteArrayRegion(arr, 0, 1, reinterpret_cast<const jbyte*>(packet));
+    env_->CallVoidMethod(btManager_, sendAndDisconnectMethod_, arr);
+    env_->DeleteLocalRef(arr);
+}
+
 bool BluetoothBridge::isConnected() const {
     if (!initialized_ || !btManager_ || !isConnectedMethod_) return false;
     return env_->CallBooleanMethod(btManager_, isConnectedMethod_) == JNI_TRUE;
@@ -314,6 +333,18 @@ bool BluetoothBridge::isReady() const {
 bool BluetoothBridge::isHostRole() const {
     if (!initialized_ || !btManager_ || !isHostMethod_) return false;
     return env_->CallBooleanMethod(btManager_, isHostMethod_) == JNI_TRUE;
+}
+
+void BluetoothBridge::showCurrentRoleToast() {
+    if (initialized_ && btManager_ && showRoleToastMethod_) {
+        env_->CallVoidMethod(btManager_, showRoleToastMethod_);
+    }
+}
+
+void BluetoothBridge::dismissConnectionDialogs() {
+    if (initialized_ && btManager_ && dismissDialogsMethod_) {
+        env_->CallVoidMethod(btManager_, dismissDialogsMethod_);
+    }
 }
 
 void BluetoothBridge::startAdvertising() {

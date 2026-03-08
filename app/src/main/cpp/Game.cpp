@@ -18,6 +18,13 @@ static constexpr float FONT_CELL = 8.f;
 static constexpr float SPLASH_DURATION = 2.5f;
 static constexpr float BLUETOOTH_SIMULATION_STEP = 1.f / 60.f;
 static constexpr int BLUETOOTH_MAX_STEPS_PER_FRAME = 4;
+static constexpr float GAMEPLAY_COUNTDOWN_DURATION = 4.f;
+static constexpr float BLUE_PLANE_COLOR_R = 0.20f;
+static constexpr float BLUE_PLANE_COLOR_G = 0.72f;
+static constexpr float BLUE_PLANE_COLOR_B = 1.00f;
+static constexpr float RED_PLANE_COLOR_R = 1.00f;
+static constexpr float RED_PLANE_COLOR_G = 0.34f;
+static constexpr float RED_PLANE_COLOR_B = 0.30f;
 
 bool isSequenceNewer(uint16_t candidate, uint16_t reference) {
     return static_cast<int16_t>(candidate - reference) > 0;
@@ -121,6 +128,18 @@ void Game::drawText(const Shader &shader, const char *text,
     }
 }
 
+void Game::drawCenteredText(const Shader &shader, const char *text,
+                            float centerX, float y, float charW, float charH,
+                            float tintR, float tintG, float tintB, float tintA) const {
+    const float textW = strlen(text) * charW * 2.f;
+    drawText(shader, text,
+             centerX - textW / 2.f + charW,
+             y,
+             charW,
+             charH,
+             tintR, tintG, tintB, tintA);
+}
+
 void Game::drawHintText(const Shader &shader, const char *text,
                         float y, float charW, float charH) const {
     int len = (int)strlen(text);
@@ -150,9 +169,31 @@ bool Game::isGameplayPaused() const {
     return localPauseActive_ || remotePauseActive_;
 }
 
+bool Game::isGameplayCountdownActive() const {
+    return gameplayCountdownActive_;
+}
+
+void Game::startGameplayCountdown() {
+    gameplayCountdownActive_ = true;
+    gameplayCountdownRemaining_ = GAMEPLAY_COUNTDOWN_DURATION;
+    bluetoothSimulationAccumulator_ = 0.f;
+    pendingBluetoothLocalFireTap_ = false;
+}
+
+void Game::stopGameplayCountdown() {
+    gameplayCountdownActive_ = false;
+    gameplayCountdownRemaining_ = 0.f;
+}
+
 void Game::setPauseFromLocalPlayer(bool paused) {
     if (localPauseActive_ == paused) return;
     localPauseActive_ = paused;
+
+    if (paused) {
+        stopGameplayCountdown();
+    } else if (!remotePauseActive_) {
+        startGameplayCountdown();
+    }
 
     if (pendingMode_ == GameMode::VsBluetooth
         && btBridge_
@@ -164,25 +205,31 @@ void Game::setPauseFromLocalPlayer(bool paused) {
 }
 
 void Game::leaveMatchToMainMenu(bool notifyRemote) {
+    bool disconnectedViaControlPacket = false;
     if (notifyRemote
         && pendingMode_ == GameMode::VsBluetooth
         && btBridge_
         && btBridge_->isConnected()) {
-        btBridge_->sendControlSignal(BluetoothBridge::ControlSignal::EndMatch);
+        btBridge_->sendControlSignalAndDisconnect(BluetoothBridge::ControlSignal::EndMatch);
+        disconnectedViaControlPacket = true;
     }
 
-    if (pendingMode_ == GameMode::VsBluetooth && btBridge_) {
+    if (!disconnectedViaControlPacket
+        && pendingMode_ == GameMode::VsBluetooth
+        && btBridge_) {
         btBridge_->disconnect();
     }
 
     localPauseActive_ = false;
     remotePauseActive_ = false;
+    opponentLeftDialogActive_ = false;
     remoteBluetoothInputBuffer_.clear();
     lastAppliedRemoteBluetoothInput_ = {};
     consumedRemoteBluetoothInputSequence_ = 0;
     localBluetoothInputSequence_ = 0;
     bluetoothSimulationAccumulator_ = 0.f;
     pendingBluetoothLocalFireTap_ = false;
+    stopGameplayCountdown();
     state_ = GameState::MainMenu;
     sessionInitialized_ = false;
 }
@@ -241,13 +288,26 @@ void Game::processBluetoothControlSignals() {
         switch (signal) {
             case BluetoothBridge::ControlSignal::Pause:
                 remotePauseActive_ = true;
+                stopGameplayCountdown();
                 break;
             case BluetoothBridge::ControlSignal::Resume:
                 remotePauseActive_ = false;
+                if (!localPauseActive_) {
+                    startGameplayCountdown();
+                }
                 break;
             case BluetoothBridge::ControlSignal::EndMatch:
                 aout << "BluetoothLobby: Opponent ended the match" << std::endl;
-                leaveMatchToMainMenu(false);
+                btBridge_->disconnect();
+                localPauseActive_ = false;
+                remotePauseActive_ = false;
+                opponentLeftDialogActive_ = true;
+                remoteBluetoothInputBuffer_.clear();
+                lastAppliedRemoteBluetoothInput_ = {};
+                consumedRemoteBluetoothInputSequence_ = 0;
+                bluetoothSimulationAccumulator_ = 0.f;
+                pendingBluetoothLocalFireTap_ = false;
+                stopGameplayCountdown();
                 return;
             case BluetoothBridge::ControlSignal::None:
                 break;
@@ -256,6 +316,17 @@ void Game::processBluetoothControlSignals() {
 }
 
 void Game::handlePauseUiTap(float wx, float wy) {
+    if (isGameplayCountdownActive()) {
+        return;
+    }
+
+    if (opponentLeftDialogActive_) {
+        if (pointInButton(pauseEndBtnSprite_, wx, wy)) {
+            leaveMatchToMainMenu(false);
+        }
+        return;
+    }
+
     if (!isGameplayPaused()) {
         if (pointInButton(pauseBtnSprite_, wx, wy)) {
             setPauseFromLocalPlayer(true);
@@ -264,6 +335,9 @@ void Game::handlePauseUiTap(float wx, float wy) {
     }
 
     if (remotePauseActive_ && !localPauseActive_) {
+        if (pointInButton(pauseEndBtnSprite_, wx, wy)) {
+            leaveMatchToMainMenu(true);
+        }
         return;
     }
 
@@ -401,8 +475,15 @@ void Game::handleInput() {
             break;
         }
         case GameState::GameOver: {
-            if (touch.screenTapped || touch.upButtonHeld || touch.downButtonHeld) {
-                leaveMatchToMainMenu(false);
+            if (touch.screenTapped) {
+                float screenW = (float) renderer_->getWidth();
+                float screenH = (float) renderer_->getHeight();
+                float aspect = renderer_->getAspect();
+                float wx, wy;
+                Utility::screenToWorld(touch.tapX, touch.tapY, screenW, screenH, 2.0f, aspect, wx, wy);
+                if (pointInButton(gameOverOkFrameSprite_, wx, wy)) {
+                    leaveMatchToMainMenu(false);
+                }
             }
             break;
         }
@@ -447,7 +528,18 @@ void Game::update(float dt) {
         if (state_ != GameState::Playing) {
             return;
         }
+        if (opponentLeftDialogActive_) {
+            return;
+        }
         if (!isGameplayPaused()) {
+            if (isGameplayCountdownActive()) {
+                gameplayCountdownRemaining_ = std::max(0.f, gameplayCountdownRemaining_ - dt);
+                if (gameplayCountdownRemaining_ <= 0.f) {
+                    stopGameplayCountdown();
+                }
+                return;
+            }
+
             const auto &touch = inputManager_.getState();
             bool gameOver = false;
             if (pendingMode_ == GameMode::VsBluetooth && btBridge_) {
@@ -524,7 +616,8 @@ void Game::update(float dt) {
                 winner_ = session_.getWinner();
                 localPauseActive_ = false;
                 remotePauseActive_ = false;
-                aout << "Game Over! Winner: Player " << winner_ << std::endl;
+                stopGameplayCountdown();
+                aout << "Game Over! Winner: " << (winner_ == 1 ? "Blue plane" : "Red plane") << std::endl;
             }
         }
     }
@@ -652,7 +745,14 @@ void Game::render() {
 
     // Playing — draw UP/DOWN/FIRE buttons
     if (state_ == GameState::Playing && uiSpritesLoaded_) {
-        if (!isGameplayPaused()) {
+        if (opponentLeftDialogActive_) {
+            pauseDialogBgSprite_.draw(renderer_->getShader());
+            pauseEndBtnSprite_.draw(renderer_->getShader());
+            drawText(renderer_->getShader(), "OPPONENT LEFT MATCH",
+                     -1.05f, 0.18f, 0.07f, 0.09f);
+            drawText(renderer_->getShader(), "OK",
+                     -0.08f, pauseEndBtnSprite_.y, 0.07f, 0.09f);
+        } else if (!isGameplayPaused()) {
             btnUpSprite_.draw(renderer_->getShader());
             btnDownSprite_.draw(renderer_->getShader());
             btnFireSprite_.draw(renderer_->getShader());
@@ -667,6 +767,9 @@ void Game::render() {
                          -0.88f, 0.20f, 0.07f, 0.09f);
                 drawText(renderer_->getShader(), "WAIT FOR RESUME",
                          -0.88f, -0.22f, 0.07f, 0.09f);
+                pauseEndBtnSprite_.draw(renderer_->getShader());
+                drawText(renderer_->getShader(), "LEAVE MATCH",
+                         -0.70f, pauseEndBtnSprite_.y, 0.07f, 0.09f);
             } else {
                 pauseContinueBtnSprite_.draw(renderer_->getShader());
                 pauseEndBtnSprite_.draw(renderer_->getShader());
@@ -681,13 +784,50 @@ void Game::render() {
         }
     }
 
+    if (state_ == GameState::Playing && gameplayCountdownActive_) {
+        gameplayCountdownBackdropSprite_.draw(renderer_->getShader());
+        const float countdownDisplayTime = std::max(0.f, gameplayCountdownRemaining_ - 0.0001f);
+        const int countdownValue = std::clamp(static_cast<int>(floorf(countdownDisplayTime)), 0, 3);
+        const char *countdownText = countdownValue == 3
+                                    ? "3"
+                                    : (countdownValue == 2 ? "2" : (countdownValue == 1 ? "1" : "0"));
+        drawCenteredText(renderer_->getShader(), "GAME STARTS IN :",
+                         0.f, 0.28f, 0.060f, 0.080f);
+        drawCenteredText(renderer_->getShader(), countdownText,
+                         0.f, -0.18f, 0.160f, 0.210f);
+    }
+
     // Game Over banner
-    if (state_ == GameState::GameOver && gameoverSpritesLoaded_) {
-        if (winner_ == 1) {
-            gameoverP1Sprite_.draw(renderer_->getShader());
-        } else {
-            gameoverP2Sprite_.draw(renderer_->getShader());
-        }
+    if (state_ == GameState::GameOver && gameOverUiLoaded_) {
+        const float winnerR = winner_ == 1 ? BLUE_PLANE_COLOR_R : RED_PLANE_COLOR_R;
+        const float winnerG = winner_ == 1 ? BLUE_PLANE_COLOR_G : RED_PLANE_COLOR_G;
+        const float winnerB = winner_ == 1 ? BLUE_PLANE_COLOR_B : RED_PLANE_COLOR_B;
+        const char *winnerText = winner_ == 1 ? "BLUE PLANE WIN" : "RED PLANE WIN";
+
+        gameOverBackdropSprite_.draw(renderer_->getShader());
+
+        Sprite bannerFrame = gameOverBannerFrameSprite_;
+        bannerFrame.tintR = winnerR;
+        bannerFrame.tintG = winnerG;
+        bannerFrame.tintB = winnerB;
+        bannerFrame.draw(renderer_->getShader());
+
+        gameOverBannerFillSprite_.draw(renderer_->getShader());
+
+        Sprite okFrame = gameOverOkFrameSprite_;
+        okFrame.tintR = winnerR;
+        okFrame.tintG = winnerG;
+        okFrame.tintB = winnerB;
+        okFrame.draw(renderer_->getShader());
+
+        gameOverOkFillSprite_.draw(renderer_->getShader());
+
+        drawCenteredText(renderer_->getShader(), winnerText,
+                         0.f, gameOverBannerFrameSprite_.y, 0.055f, 0.080f,
+                         winnerR, winnerG, winnerB);
+        drawCenteredText(renderer_->getShader(), "OK",
+                         0.f, gameOverOkFrameSprite_.y, 0.072f, 0.090f,
+                         winnerR, winnerG, winnerB);
     }
 
     renderer_->endFrame();
@@ -742,12 +882,18 @@ void Game::initSession() {
     sessionInitialized_ = true;
     localPauseActive_ = false;
     remotePauseActive_ = false;
+    opponentLeftDialogActive_ = false;
     remoteBluetoothInputBuffer_.clear();
     lastAppliedRemoteBluetoothInput_ = {};
     consumedRemoteBluetoothInputSequence_ = 0;
     localBluetoothInputSequence_ = 0;
     bluetoothSimulationAccumulator_ = 0.f;
     pendingBluetoothLocalFireTap_ = false;
+    startGameplayCountdown();
+    if (pendingMode_ == GameMode::VsBluetooth && btBridge_ && btBridge_->isConnected()) {
+        btBridge_->dismissConnectionDialogs();
+        btBridge_->showCurrentRoleToast();
+    }
 
     if (!fontTex_) {
         fontTex_ = TextureAsset::loadAsset(assetManager, "font.png");
@@ -781,6 +927,14 @@ void Game::initSession() {
         pauseDialogBgSprite_.tintB = 0.f;
         pauseDialogBgSprite_.tintA = 0.78f;
 
+        gameplayCountdownBackdropSprite_.init(menuBtnTex, screenHalfW + 0.30f, 2.25f);
+        gameplayCountdownBackdropSprite_.x = 0.f;
+        gameplayCountdownBackdropSprite_.y = 0.f;
+        gameplayCountdownBackdropSprite_.tintR = 0.f;
+        gameplayCountdownBackdropSprite_.tintG = 0.f;
+        gameplayCountdownBackdropSprite_.tintB = 0.f;
+        gameplayCountdownBackdropSprite_.tintA = 0.92f;
+
         pauseContinueBtnSprite_.init(menuBtnTex, 1.25f, 0.24f);
         pauseContinueBtnSprite_.x = 0.f;
         pauseContinueBtnSprite_.y = 0.20f;
@@ -793,19 +947,46 @@ void Game::initSession() {
     }
     pauseBtnSprite_.x = screenHalfW - 0.48f;
     pauseBtnSprite_.y = 1.55f;
+    gameplayCountdownBackdropSprite_.x = 0.f;
+    gameplayCountdownBackdropSprite_.y = 0.f;
+    gameplayCountdownBackdropSprite_.scaleX = screenHalfW + 0.30f;
+    gameplayCountdownBackdropSprite_.scaleY = 2.25f;
 
-    // Load Game Over sprites once
-    if (!gameoverSpritesLoaded_) {
-        auto goP1Tex = TextureAsset::loadAsset(assetManager, "gameover_p1wins.png");
-        gameoverP1Sprite_.init(goP1Tex, 2.0f, 0.5f);
-        gameoverP1Sprite_.x = 0.0f;
-        gameoverP1Sprite_.y = 0.3f;
+    if (!gameOverUiLoaded_) {
+        auto menuBtnTex = TextureAsset::loadAsset(assetManager, "button.png");
 
-        auto goP2Tex = TextureAsset::loadAsset(assetManager, "gameover_p2wins.png");
-        gameoverP2Sprite_.init(goP2Tex, 2.0f, 0.5f);
-        gameoverP2Sprite_.x = 0.0f;
-        gameoverP2Sprite_.y = 0.3f;
+        gameOverBackdropSprite_.init(menuBtnTex, 2.35f, 1.55f);
+        gameOverBackdropSprite_.x = 0.f;
+        gameOverBackdropSprite_.y = 0.f;
+        gameOverBackdropSprite_.tintR = 0.f;
+        gameOverBackdropSprite_.tintG = 0.f;
+        gameOverBackdropSprite_.tintB = 0.f;
+        gameOverBackdropSprite_.tintA = 0.78f;
 
-        gameoverSpritesLoaded_ = true;
+        gameOverBannerFrameSprite_.init(menuBtnTex, 1.90f, 0.42f);
+        gameOverBannerFrameSprite_.x = 0.f;
+        gameOverBannerFrameSprite_.y = 0.38f;
+
+        gameOverBannerFillSprite_.init(menuBtnTex, 1.78f, 0.32f);
+        gameOverBannerFillSprite_.x = 0.f;
+        gameOverBannerFillSprite_.y = 0.38f;
+        gameOverBannerFillSprite_.tintR = 0.05f;
+        gameOverBannerFillSprite_.tintG = 0.05f;
+        gameOverBannerFillSprite_.tintB = 0.06f;
+        gameOverBannerFillSprite_.tintA = 0.96f;
+
+        gameOverOkFrameSprite_.init(menuBtnTex, 0.90f, 0.24f);
+        gameOverOkFrameSprite_.x = 0.f;
+        gameOverOkFrameSprite_.y = -0.48f;
+
+        gameOverOkFillSprite_.init(menuBtnTex, 0.80f, 0.18f);
+        gameOverOkFillSprite_.x = 0.f;
+        gameOverOkFillSprite_.y = -0.48f;
+        gameOverOkFillSprite_.tintR = 0.05f;
+        gameOverOkFillSprite_.tintG = 0.05f;
+        gameOverOkFillSprite_.tintB = 0.06f;
+        gameOverOkFillSprite_.tintA = 0.96f;
+
+        gameOverUiLoaded_ = true;
     }
 }
