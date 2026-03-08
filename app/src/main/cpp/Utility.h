@@ -36,6 +36,7 @@ public:
 
     static bool aabbOverlap(float ax, float ay, float aw, float ah,
                             float bx, float by, float bw, float bh);
+    static float wrapWorldX(float x, float worldHalfW, float objectHalfW = 0.f);
 
     static void screenToWorld(float sx, float sy, float screenW, float screenH,
                               float halfH, float aspect, float &wx, float &wy);

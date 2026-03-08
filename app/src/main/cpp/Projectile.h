@@ -17,7 +17,7 @@ struct Projectile {
 
 class ProjectilePool {
 public:
-    void init(std::shared_ptr<TextureAsset> texture);
+    void init(std::shared_ptr<TextureAsset> texture, float worldHalfW);
     void spawn(float x, float y, float velX);
     void spawnDirectional(float x, float y, float velX, float velY);
     void updateAll(float dt);
@@ -28,6 +28,7 @@ public:
 private:
     std::array<Projectile, MAX_PROJECTILES> projectiles_;
     std::shared_ptr<TextureAsset> texture_;
+    float worldHalfW_ = WORLD_HALF_W;
 };
 
 #endif //BYPLANES_PROJECTILE_H

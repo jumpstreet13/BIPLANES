@@ -102,6 +102,13 @@ bool Utility::aabbOverlap(float ax, float ay, float aw, float ah,
            (ay - ah < by + bh) && (ay + ah > by - bh);
 }
 
+float Utility::wrapWorldX(float x, float worldHalfW, float objectHalfW) {
+    const float worldWidth = 2.f * worldHalfW;
+    while (x > worldHalfW + objectHalfW) x -= worldWidth;
+    while (x < -worldHalfW - objectHalfW) x += worldWidth;
+    return x;
+}
+
 void Utility::screenToWorld(float sx, float sy, float screenW, float screenH,
                             float halfH, float aspect, float &wx, float &wy) {
     float halfW = halfH * aspect;

@@ -2,6 +2,12 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+float planeHalfExtentX(float angle) {
+    return fabsf(cosf(angle)) * PLANE_HALF_W + fabsf(sinf(angle)) * PLANE_HALF_H;
+}
+}
+
 // Smooth orientation: no flip, just continuous rotation.
 // P1 sprite faces right → rotation = angle.
 // P2 sprite faces left  → rotation = angle − π (nose at -X needs inverted rotation).
@@ -15,9 +21,10 @@ void Plane::init(std::shared_ptr<TextureAsset> texture,
                  std::shared_ptr<TextureAsset> smoke,
                  std::shared_ptr<TextureAsset> fire,
                  std::shared_ptr<TextureAsset> spark,
-                 float startX, bool facingLeft) {
+                 float startX, bool facingLeft, float worldHalfW) {
     spawnX = startX;
     spawnFacingLeft = facingLeft;
+    this->worldHalfW = worldHalfW;
     x = startX;
     y = 0.f;
     angle = facingLeft ? (float)M_PI : 0.f;
@@ -85,6 +92,7 @@ void Plane::update(float dt, bool thrustUp, bool thrustDown) {
         if (angle > (float)M_PI * 0.4f) angle = (float)M_PI * 0.4f;
 
         x += groundSpeed * dt;
+        x = Utility::wrapWorldX(x, worldHalfW, planeHalfExtentX(angle));
 
         if (sinf(angle) > TAKEOFF_LIFTOFF && groundSpeed > PLANE_SPEED * 0.5f) {
             grounded = false;
@@ -115,8 +123,7 @@ void Plane::update(float dt, bool thrustUp, bool thrustDown) {
     }
 
     // Wrap left/right
-    if (x >  WORLD_HALF_W) x -= 2.f * WORLD_HALF_W;
-    if (x < -WORLD_HALF_W) x += 2.f * WORLD_HALF_W;
+    x = Utility::wrapWorldX(x, worldHalfW, planeHalfExtentX(angle));
 
     sprite.x = x;
     sprite.y = y;

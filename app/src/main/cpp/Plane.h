@@ -14,6 +14,7 @@ struct Plane {
     int score = 0;
     float spawnX = 0.f;
     bool spawnFacingLeft = false;
+    float worldHalfW = WORLD_HALF_W;
 
     Sprite sprite;
 
@@ -48,7 +49,7 @@ struct Plane {
               std::shared_ptr<TextureAsset> smoke,
               std::shared_ptr<TextureAsset> fire,
               std::shared_ptr<TextureAsset> spark,
-              float startX, bool facingLeft);
+              float startX, bool facingLeft, float worldHalfW);
     void update(float dt, bool thrustUp, bool thrustDown);
     void reset(float startX, bool facingLeft);
     bool hitPlane();

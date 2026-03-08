@@ -39,16 +39,18 @@ void Background::init(AAssetManager *assetManager, float aspect) {
 }
 
 void Background::update(float dt) {
+    const float worldHalfW = worldHalfWidthForAspect(aspect_);
+
     // Cloud 1 moves right
     cloud1X_ += 0.5f * dt;
-    if (cloud1X_ > WORLD_HALF_W + cloud1HalfW_)
-        cloud1X_ = -WORLD_HALF_W - cloud1HalfW_;
+    if (cloud1X_ > worldHalfW + cloud1HalfW_)
+        cloud1X_ = -worldHalfW - cloud1HalfW_;
     cloud1_.x = cloud1X_;
 
     // Cloud 2 moves left
     cloud2X_ -= 0.4f * dt;
-    if (cloud2X_ < -WORLD_HALF_W - cloud2HalfW_)
-        cloud2X_ = WORLD_HALF_W + cloud2HalfW_;
+    if (cloud2X_ < -worldHalfW - cloud2HalfW_)
+        cloud2X_ = worldHalfW + cloud2HalfW_;
     cloud2_.x = cloud2X_;
 }
 

@@ -16,7 +16,7 @@ class AIController {
 public:
     void setDifficulty(AiDifficulty difficulty);
     void reset();
-    AIOutput update(float dt, const Plane &aiPlane, const Plane &playerPlane);
+    AIOutput update(float dt, const Plane &aiPlane, const Plane &playerPlane, float worldHalfW);
 
 private:
     AiDifficulty difficulty_ = AiDifficulty::Medium;

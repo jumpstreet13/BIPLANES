@@ -22,16 +22,16 @@ float normalizeAngle(float angle) {
     return angle;
 }
 
-float wrapWorldX(float x) {
-    while (x >  WORLD_HALF_W) x -= 2.f * WORLD_HALF_W;
-    while (x < -WORLD_HALF_W) x += 2.f * WORLD_HALF_W;
+float wrapWorldX(float x, float worldHalfW) {
+    while (x >  worldHalfW) x -= 2.f * worldHalfW;
+    while (x < -worldHalfW) x += 2.f * worldHalfW;
     return x;
 }
 
-float shortestWorldDx(float fromX, float toX) {
+float shortestWorldDx(float fromX, float toX, float worldHalfW) {
     float dx = toX - fromX;
-    while (dx >  WORLD_HALF_W) dx -= 2.f * WORLD_HALF_W;
-    while (dx < -WORLD_HALF_W) dx += 2.f * WORLD_HALF_W;
+    while (dx >  worldHalfW) dx -= 2.f * worldHalfW;
+    while (dx < -worldHalfW) dx += 2.f * worldHalfW;
     return dx;
 }
 
@@ -57,7 +57,7 @@ void AIController::reset() {
     fireTimer_ = getProfile(difficulty_).fireInterval;
 }
 
-AIOutput AIController::update(float dt, const Plane &aiPlane, const Plane &playerPlane) {
+AIOutput AIController::update(float dt, const Plane &aiPlane, const Plane &playerPlane, float worldHalfW) {
     AIOutput output;
     const AIProfile profile = getProfile(difficulty_);
 
@@ -74,24 +74,24 @@ AIOutput AIController::update(float dt, const Plane &aiPlane, const Plane &playe
         }
     }
 
-    float targetX = wrapWorldX(playerPlane.x + playerVx * profile.leadTime);
+    float targetX = wrapWorldX(playerPlane.x + playerVx * profile.leadTime, worldHalfW);
     float targetY = playerPlane.y + playerVy * profile.leadTime;
     const float minTargetY = GROUND_Y + profile.minCruiseMargin;
     const float maxTargetY = WORLD_HALF_H - PLANE_HALF_H;
     if (targetY < minTargetY) targetY = minTargetY;
     if (targetY > maxTargetY) targetY = maxTargetY;
 
-    const float dx = shortestWorldDx(aiPlane.x, targetX);
+    const float dx = shortestWorldDx(aiPlane.x, targetX, worldHalfW);
     const float dy = targetY - aiPlane.y;
     const float desiredAngle = atan2f(dy, dx);
     float diff = normalizeAngle(desiredAngle - aiPlane.angle);
 
     const float recoveryY = GROUND_Y + profile.recoverMargin;
     const float predictedY = aiPlane.y + sinf(aiPlane.angle) * PLANE_SPEED * profile.lookAheadTime;
-    const float predictedX = wrapWorldX(aiPlane.x + cosf(aiPlane.angle) * PLANE_SPEED * profile.lookAheadTime);
+    const float predictedX = wrapWorldX(aiPlane.x + cosf(aiPlane.angle) * PLANE_SPEED * profile.lookAheadTime, worldHalfW);
     const float houseSafeY = GROUND_Y + profile.houseSafeMargin;
-    const float houseDxNow = fabsf(shortestWorldDx(aiPlane.x, HOUSE_X));
-    const float houseDxSoon = fabsf(shortestWorldDx(predictedX, HOUSE_X));
+    const float houseDxNow = fabsf(shortestWorldDx(aiPlane.x, HOUSE_X, worldHalfW));
+    const float houseDxSoon = fabsf(shortestWorldDx(predictedX, HOUSE_X, worldHalfW));
 
     const bool needsGroundRecovery =
             (aiPlane.y < recoveryY && sinf(aiPlane.angle) < 0.20f)

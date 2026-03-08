@@ -6,6 +6,7 @@
 void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode, AiDifficulty difficulty) {
     aspect_ = aspect;
     mode_ = mode;
+    const float worldHalfW = worldHalfWidthForAspect(aspect);
 
     auto p1Tex = TextureAsset::loadAsset(assetManager, "plane_p1.png");
     auto p2Tex = TextureAsset::loadAsset(assetManager, "plane_p2.png");
@@ -21,17 +22,17 @@ void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode,
     auto fireTex  = TextureAsset::loadAsset(assetManager, "fire.png");
     auto sparkTex = TextureAsset::loadAsset(assetManager, "spark.png");
 
-    player_.init(p1Tex, explFrames, smokeTex, fireTex, sparkTex, -3.3f, false);
-    enemy_.init(p2Tex, explFrames, smokeTex, fireTex, sparkTex, 2.8f, true);
+    player_.init(p1Tex, explFrames, smokeTex, fireTex, sparkTex, -3.3f, false, worldHalfW);
+    enemy_.init(p2Tex, explFrames, smokeTex, fireTex, sparkTex, 2.8f, true, worldHalfW);
 
     // Player starts on the ground
     player_.setGrounded();
 
-    playerBullets_.init(bulletTex);
-    enemyBullets_.init(bulletTex);
+    playerBullets_.init(bulletTex, worldHalfW);
+    enemyBullets_.init(bulletTex, worldHalfW);
 
     background_.init(assetManager, aspect);
-    hud_.init(assetManager);
+    hud_.init(assetManager, aspect);
     sound_.init(assetManager);
     ai_.setDifficulty(difficulty);
 
@@ -55,7 +56,7 @@ bool GameSession::update(float dt, const TouchState &input) {
 
     // AI update
     if (mode_ == GameMode::VsAI) {
-        AIOutput aiOut = ai_.update(dt, enemy_, player_);
+        AIOutput aiOut = ai_.update(dt, enemy_, player_, worldHalfWidthForAspect(aspect_));
         enemy_.update(dt, aiOut.thrustUp, aiOut.thrustDown);
         if (aiOut.fire && enemyFireCooldown_ <= 0.f
             && enemy_.isAlive && !enemy_.exploding) {
@@ -113,8 +114,8 @@ void GameSession::checkCollisions() {
     if (enemy_.isAlive && !enemy_.exploding && !enemy_.isInvulnerable()) {
         for (auto &p : playerBullets_.getProjectiles()) {
             if (!p.active) continue;
-            if (Utility::aabbOverlap(p.x, p.y, 0.05f, 0.05f,
-                                      enemy_.x, enemy_.y, PLANE_HALF_W, PLANE_HALF_H)) {
+            if (Utility::aabbOverlap(p.x, p.y, BULLET_HALF_SIZE, BULLET_HALF_SIZE,
+                                     enemy_.x, enemy_.y, PLANE_HALF_W, PLANE_HALF_H)) {
                 p.active = false;
                 p.sprite.visible = false;
                 if (enemy_.hitPlane()) {
@@ -132,8 +133,8 @@ void GameSession::checkCollisions() {
     if (player_.isAlive && !player_.exploding && !player_.isInvulnerable()) {
         for (auto &p : enemyBullets_.getProjectiles()) {
             if (!p.active) continue;
-            if (Utility::aabbOverlap(p.x, p.y, 0.05f, 0.05f,
-                                      player_.x, player_.y, PLANE_HALF_W, PLANE_HALF_H)) {
+            if (Utility::aabbOverlap(p.x, p.y, BULLET_HALF_SIZE, BULLET_HALF_SIZE,
+                                     player_.x, player_.y, PLANE_HALF_W, PLANE_HALF_H)) {
                 p.active = false;
                 p.sprite.visible = false;
                 if (player_.hitPlane()) {

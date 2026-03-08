@@ -3,7 +3,9 @@
 
 static constexpr float ZEPPELIN_SPEED = 0.6f;
 
-void HUD::init(AAssetManager *assetManager) {
+void HUD::init(AAssetManager *assetManager, float aspect) {
+    worldHalfW_ = worldHalfWidthForAspect(aspect);
+
     // Zeppelin sprite
     auto zepTex = TextureAsset::loadAsset(assetManager, "zeppelin.png");
     float zepW = 1.0f;
@@ -12,7 +14,7 @@ void HUD::init(AAssetManager *assetManager) {
     zepHalfW_ = zepW;
     zeppelin_.init(zepTex, zepW, zepH);
     zeppelin_.y = 1.3f;
-    zeppelinX_ = -WORLD_HALF_W - zepHalfW_;
+    zeppelinX_ = -worldHalfW_ - zepHalfW_;
 
     // Digit textures: blue for P1, red for P2 (200x40, 10 digits of 20x40 each)
     digitsBlue_ = TextureAsset::loadAsset(assetManager, "digits_blue.png");
@@ -30,8 +32,8 @@ void HUD::init(AAssetManager *assetManager) {
 
 void HUD::update(float dt) {
     zeppelinX_ += ZEPPELIN_SPEED * dt;
-    if (zeppelinX_ > WORLD_HALF_W + zepHalfW_)
-        zeppelinX_ = -WORLD_HALF_W - zepHalfW_;
+    if (zeppelinX_ > worldHalfW_ + zepHalfW_)
+        zeppelinX_ = -worldHalfW_ - zepHalfW_;
     zeppelin_.x = zeppelinX_;
 
     // Position digits on the zeppelin white panel

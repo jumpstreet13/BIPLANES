@@ -1,10 +1,11 @@
 #include "Projectile.h"
 
-void ProjectilePool::init(std::shared_ptr<TextureAsset> texture) {
+void ProjectilePool::init(std::shared_ptr<TextureAsset> texture, float worldHalfW) {
     texture_ = std::move(texture);
+    worldHalfW_ = worldHalfW;
     for (auto &p : projectiles_) {
         p.active = false;
-        p.sprite.init(texture_, 0.05f, 0.05f);
+        p.sprite.init(texture_, BULLET_HALF_SIZE, BULLET_HALF_SIZE);
         p.sprite.visible = false;
     }
 }
@@ -45,8 +46,7 @@ void ProjectilePool::updateAll(float dt) {
         p.lifetime -= dt;
 
         // Wrap left/right like planes
-        if (p.x >  WORLD_HALF_W) p.x -= 2.f * WORLD_HALF_W;
-        if (p.x < -WORLD_HALF_W) p.x += 2.f * WORLD_HALF_W;
+        p.x = Utility::wrapWorldX(p.x, worldHalfW_, BULLET_HALF_SIZE);
 
         // Bullet hits ground — disappear
         if (p.y <= GROUND_Y) {
