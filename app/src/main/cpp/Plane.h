@@ -14,6 +14,7 @@ struct Plane {
     int score = 0;
     float spawnX = 0.f;
     bool spawnFacingLeft = false;
+    bool respawnOnGround = false;
     float worldHalfW = WORLD_HALF_W;
 
     Sprite sprite;
@@ -35,10 +36,15 @@ struct Plane {
     std::shared_ptr<TextureAsset> fireTex;   // fire.png: 3 frames, 13x13 each
     std::shared_ptr<TextureAsset> sparkTex;
     float damageEffectTimer = 0.f;
+    float predictedExplosionTimer = 0.f;
+    float impactEffectTimer = 0.f;
+    float impactEffectX = 0.f;
+    float impactEffectY = 0.f;
     static constexpr int SMOKE_FRAMES = 5;
     static constexpr int FIRE_FRAMES = 3;
     static constexpr float SMOKE_ANIM_SPEED = 6.f;
     static constexpr float FIRE_ANIM_SPEED = 8.f;
+    static constexpr float IMPACT_EFFECT_DURATION = 0.16f;
 
     // Respawn invulnerability
     float respawnTimer = 0.f;
@@ -54,6 +60,10 @@ struct Plane {
     void reset(float startX, bool facingLeft);
     bool hitPlane();
     void triggerExplosion();
+    void triggerImpactEffect(float worldX, float worldY);
+    void triggerPredictedExplosion();
+    void updatePredictedEffects(float dt);
+    bool hasPredictedExplosion() const { return predictedExplosionTimer > 0.f; }
     void draw(const Shader& shader) const;
 
     // Set up for ground start (player only)

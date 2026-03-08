@@ -4,6 +4,7 @@
 #include <game-activity/native_app_glue/android_native_app_glue.h>
 #include <game-activity/GameActivity.h>
 #include "AndroidOut.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -15,6 +16,12 @@ static constexpr float FONT_TEX_H = 40.f;
 static constexpr float FONT_CELL = 8.f;
 
 static constexpr float SPLASH_DURATION = 2.5f;
+static constexpr float BLUETOOTH_SIMULATION_STEP = 1.f / 60.f;
+static constexpr int BLUETOOTH_MAX_STEPS_PER_FRAME = 4;
+
+bool isSequenceNewer(uint16_t candidate, uint16_t reference) {
+    return static_cast<int16_t>(candidate - reference) > 0;
+}
 
 Game::Game(android_app *pApp) : app_(pApp) {
     renderer_ = std::make_unique<Renderer>(pApp);
@@ -170,8 +177,60 @@ void Game::leaveMatchToMainMenu(bool notifyRemote) {
 
     localPauseActive_ = false;
     remotePauseActive_ = false;
+    remoteBluetoothInputBuffer_.clear();
+    lastAppliedRemoteBluetoothInput_ = {};
+    consumedRemoteBluetoothInputSequence_ = 0;
+    localBluetoothInputSequence_ = 0;
+    bluetoothSimulationAccumulator_ = 0.f;
+    pendingBluetoothLocalFireTap_ = false;
     state_ = GameState::MainMenu;
     sessionInitialized_ = false;
+}
+
+void Game::enqueueRemoteBluetoothInput(const BluetoothInputState &input) {
+    if (!isSequenceNewer(input.sequence, consumedRemoteBluetoothInputSequence_)) {
+        return;
+    }
+
+    if (!remoteBluetoothInputBuffer_.empty()) {
+        BluetoothInputState &lastQueuedInput = remoteBluetoothInputBuffer_.back();
+        if (lastQueuedInput.sequence == input.sequence) {
+            lastQueuedInput.upButtonHeld = input.upButtonHeld;
+            lastQueuedInput.downButtonHeld = input.downButtonHeld;
+            lastQueuedInput.fireTapped = lastQueuedInput.fireTapped || input.fireTapped;
+            return;
+        }
+
+        if (!isSequenceNewer(input.sequence, lastQueuedInput.sequence)) {
+            return;
+        }
+    }
+
+    remoteBluetoothInputBuffer_.push_back(input);
+}
+
+BluetoothInputState Game::consumeRemoteBluetoothInputForStep() {
+    while (!remoteBluetoothInputBuffer_.empty()
+           && !isSequenceNewer(
+               remoteBluetoothInputBuffer_.front().sequence,
+               consumedRemoteBluetoothInputSequence_
+           )) {
+        remoteBluetoothInputBuffer_.pop_front();
+    }
+
+    BluetoothInputState stepInput = lastAppliedRemoteBluetoothInput_;
+    stepInput.fireTapped = false;
+
+    if (remoteBluetoothInputBuffer_.empty()) {
+        return stepInput;
+    }
+
+    stepInput = remoteBluetoothInputBuffer_.front();
+    remoteBluetoothInputBuffer_.pop_front();
+    consumedRemoteBluetoothInputSequence_ = stepInput.sequence;
+    lastAppliedRemoteBluetoothInput_ = stepInput;
+    lastAppliedRemoteBluetoothInput_.fireTapped = false;
+    return stepInput;
 }
 
 void Game::processBluetoothControlSignals() {
@@ -390,7 +449,76 @@ void Game::update(float dt) {
         }
         if (!isGameplayPaused()) {
             const auto &touch = inputManager_.getState();
-            bool gameOver = session_.update(dt, touch);
+            bool gameOver = false;
+            if (pendingMode_ == GameMode::VsBluetooth && btBridge_) {
+                pendingBluetoothLocalFireTap_ = pendingBluetoothLocalFireTap_ || touch.fireTapped;
+                bluetoothSimulationAccumulator_ = std::min(
+                    bluetoothSimulationAccumulator_ + dt,
+                    BLUETOOTH_SIMULATION_STEP * BLUETOOTH_MAX_STEPS_PER_FRAME
+                );
+
+                if (btBridge_->isHostRole()) {
+                    BluetoothInputState polledInput;
+                    while (btBridge_->pollReceivedInputState(polledInput)) {
+                        enqueueRemoteBluetoothInput(polledInput);
+                    }
+
+                    while (bluetoothSimulationAccumulator_ >= BLUETOOTH_SIMULATION_STEP) {
+                        TouchState stepTouch = touch;
+                        stepTouch.fireTapped = pendingBluetoothLocalFireTap_;
+                        const BluetoothInputState remoteStepInput = consumeRemoteBluetoothInputForStep();
+                        gameOver = session_.updateBluetoothHost(
+                            BLUETOOTH_SIMULATION_STEP,
+                            stepTouch,
+                            remoteStepInput
+                        );
+                        pendingBluetoothLocalFireTap_ = false;
+                        bluetoothSimulationAccumulator_ -= BLUETOOTH_SIMULATION_STEP;
+                        btBridge_->sendMatchState(
+                            session_.buildBluetoothMatchState(consumedRemoteBluetoothInputSequence_)
+                        );
+                        if (gameOver) {
+                            break;
+                        }
+                    }
+                } else {
+                    BluetoothMatchState matchState;
+                    while (btBridge_->pollReceivedMatchState(matchState)) {
+                        session_.applyBluetoothMatchState(matchState);
+                    }
+
+                    while (bluetoothSimulationAccumulator_ >= BLUETOOTH_SIMULATION_STEP) {
+                        TouchState stepTouch = touch;
+                        stepTouch.fireTapped = pendingBluetoothLocalFireTap_;
+
+                        BluetoothInputState localInput;
+                        localInput.upButtonHeld = stepTouch.upButtonHeld;
+                        localInput.downButtonHeld = stepTouch.downButtonHeld;
+                        localInput.fireTapped = stepTouch.fireTapped;
+                        localInput.sequence = ++localBluetoothInputSequence_;
+                        btBridge_->sendInputState(localInput);
+
+                        session_.updateBluetoothClient(
+                            BLUETOOTH_SIMULATION_STEP,
+                            stepTouch,
+                            localInput.sequence
+                        );
+                        pendingBluetoothLocalFireTap_ = false;
+                        bluetoothSimulationAccumulator_ -= BLUETOOTH_SIMULATION_STEP;
+
+                        while (btBridge_->pollReceivedMatchState(matchState)) {
+                            session_.applyBluetoothMatchState(matchState);
+                        }
+
+                        gameOver = session_.getWinner() != 0;
+                        if (gameOver) {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                gameOver = session_.update(dt, touch);
+            }
             if (gameOver) {
                 state_ = GameState::GameOver;
                 winner_ = session_.getWinner();
@@ -606,11 +734,20 @@ void Game::initSession() {
     auto *assetManager = app_->activity->assetManager;
     float aspect = renderer_->getAspect();
     float screenHalfW = 2.0f * aspect;
-    session_.init(assetManager, aspect, pendingMode_, aiDifficulty_);
+    const bool localControlsBlue = pendingMode_ != GameMode::VsBluetooth
+                                   || !btBridge_
+                                   || btBridge_->isHostRole();
+    session_.init(assetManager, aspect, pendingMode_, aiDifficulty_, localControlsBlue);
     session_.reset();
     sessionInitialized_ = true;
     localPauseActive_ = false;
     remotePauseActive_ = false;
+    remoteBluetoothInputBuffer_.clear();
+    lastAppliedRemoteBluetoothInput_ = {};
+    consumedRemoteBluetoothInputSequence_ = 0;
+    localBluetoothInputSequence_ = 0;
+    bluetoothSimulationAccumulator_ = 0.f;
+    pendingBluetoothLocalFireTap_ = false;
 
     if (!fontTex_) {
         fontTex_ = TextureAsset::loadAsset(assetManager, "font.png");

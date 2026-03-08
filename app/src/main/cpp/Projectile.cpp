@@ -10,13 +10,15 @@ void ProjectilePool::init(std::shared_ptr<TextureAsset> texture, float worldHalf
     }
 }
 
-void ProjectilePool::spawn(float x, float y, float velX) {
+void ProjectilePool::spawn(float x, float y, float velX, uint16_t spawnedByInputSequence) {
     for (auto &p : projectiles_) {
         if (!p.active) {
             p.x = x;
             p.y = y;
             p.velX = velX;
+            p.velY = 0.f;
             p.lifetime = BULLET_LIFETIME;
+            p.spawnedByInputSequence = spawnedByInputSequence;
             p.active = true;
             p.sprite.visible = true;
             return;
@@ -24,12 +26,13 @@ void ProjectilePool::spawn(float x, float y, float velX) {
     }
 }
 
-void ProjectilePool::spawnDirectional(float x, float y, float velX, float velY) {
+void ProjectilePool::spawnDirectional(float x, float y, float velX, float velY, uint16_t spawnedByInputSequence) {
     for (auto &p : projectiles_) {
         if (!p.active) {
             p.x = x; p.y = y;
             p.velX = velX; p.velY = velY;
             p.lifetime = BULLET_LIFETIME;
+            p.spawnedByInputSequence = spawnedByInputSequence;
             p.active = true;
             p.sprite.visible = true;
             return;
@@ -51,12 +54,14 @@ void ProjectilePool::updateAll(float dt) {
         // Bullet hits ground — disappear
         if (p.y <= GROUND_Y) {
             p.active = false;
+            p.spawnedByInputSequence = 0;
             p.sprite.visible = false;
             continue;
         }
 
         if (p.lifetime <= 0.f) {
             p.active = false;
+            p.spawnedByInputSequence = 0;
             p.sprite.visible = false;
         }
 

@@ -1,21 +1,26 @@
 #include "BluetoothBridge.h"
 #include "AndroidOut.h"
-#include <cstring>
+
 #include <algorithm>
+#include <cstring>
 
 BluetoothBridge* BluetoothBridge::instance_ = nullptr;
 
-// Packet layout (50 bytes):
-// [0]     uint8 packetType (0 = state, 1 = pause, 2 = resume, 3 = end match)
-// [1-4]   float planeY
-// [5-8]   float planeVelY
-// [9]     uint8 projCount
-// [10-29] float projX[5]
-// [30-49] float projY[5]
-static constexpr int PACKET_SIZE = 50;
-static constexpr uint8_t STATE_PACKET_TYPE = 0;
-
 namespace {
+constexpr uint8_t MATCH_STATE_PACKET_TYPE = 0;
+constexpr uint8_t INPUT_PACKET_TYPE = 4;
+constexpr uint8_t PLANE_FLAG_ALIVE = 1 << 0;
+constexpr uint8_t PLANE_FLAG_GROUNDED = 1 << 1;
+constexpr uint8_t PLANE_FLAG_EXPLODING = 1 << 2;
+constexpr uint8_t INPUT_FLAG_UP = 1 << 0;
+constexpr uint8_t INPUT_FLAG_DOWN = 1 << 1;
+constexpr uint8_t INPUT_FLAG_FIRE = 1 << 2;
+
+constexpr int PLANE_PACKET_SIZE = sizeof(float) * 6 + 3;
+constexpr int PROJECTILE_PACKET_SIZE = 1 + sizeof(float) * MAX_PROJECTILES * 2;
+constexpr int MATCH_PACKET_SIZE = 1 + sizeof(uint16_t) + sizeof(float) + PLANE_PACKET_SIZE * 2 + PROJECTILE_PACKET_SIZE * 2;
+constexpr int INPUT_PACKET_SIZE = 1 + 1 + sizeof(uint16_t);
+
 bool clearJniException(JNIEnv* env, const char* context) {
     if (!env->ExceptionCheck()) {
         return false;
@@ -72,6 +77,90 @@ jclass loadBluetoothManagerClass(JNIEnv* env, jobject activity) {
 
     return static_cast<jclass>(classObject);
 }
+
+void writeFloat(uint8_t*& dst, float value) {
+    memcpy(dst, &value, sizeof(float));
+    dst += sizeof(float);
+}
+
+void writeUint16(uint8_t*& dst, uint16_t value) {
+    *dst++ = static_cast<uint8_t>((value >> 8) & 0xFF);
+    *dst++ = static_cast<uint8_t>(value & 0xFF);
+}
+
+float readFloat(const uint8_t*& src) {
+    float value = 0.f;
+    memcpy(&value, src, sizeof(float));
+    src += sizeof(float);
+    return value;
+}
+
+uint16_t readUint16(const uint8_t*& src) {
+    const uint16_t value = (static_cast<uint16_t>(src[0]) << 8)
+                           | static_cast<uint16_t>(src[1]);
+    src += sizeof(uint16_t);
+    return value;
+}
+
+uint8_t encodePlaneFlags(const BluetoothPlaneState& plane) {
+    uint8_t flags = 0;
+    if (plane.isAlive) flags |= PLANE_FLAG_ALIVE;
+    if (plane.grounded) flags |= PLANE_FLAG_GROUNDED;
+    if (plane.exploding) flags |= PLANE_FLAG_EXPLODING;
+    return flags;
+}
+
+void writePlaneState(uint8_t*& dst, const BluetoothPlaneState& plane) {
+    writeFloat(dst, plane.x);
+    writeFloat(dst, plane.y);
+    writeFloat(dst, plane.angle);
+    writeFloat(dst, plane.groundSpeed);
+    writeFloat(dst, plane.respawnTimer);
+    writeFloat(dst, plane.explosionTimer);
+    *dst++ = plane.hp;
+    *dst++ = plane.score;
+    *dst++ = encodePlaneFlags(plane);
+}
+
+BluetoothPlaneState readPlaneState(const uint8_t*& src) {
+    BluetoothPlaneState plane;
+    plane.x = readFloat(src);
+    plane.y = readFloat(src);
+    plane.angle = readFloat(src);
+    plane.groundSpeed = readFloat(src);
+    plane.respawnTimer = readFloat(src);
+    plane.explosionTimer = readFloat(src);
+    plane.hp = *src++;
+    plane.score = *src++;
+    const uint8_t flags = *src++;
+    plane.isAlive = (flags & PLANE_FLAG_ALIVE) != 0;
+    plane.grounded = (flags & PLANE_FLAG_GROUNDED) != 0;
+    plane.exploding = (flags & PLANE_FLAG_EXPLODING) != 0;
+    return plane;
+}
+
+void writeProjectileState(uint8_t*& dst, const BluetoothProjectileState& projectileState) {
+    const uint8_t count = std::min<int>(projectileState.count, MAX_PROJECTILES);
+    *dst++ = count;
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        writeFloat(dst, i < count ? projectileState.x[i] : 0.f);
+    }
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        writeFloat(dst, i < count ? projectileState.y[i] : 0.f);
+    }
+}
+
+BluetoothProjectileState readProjectileState(const uint8_t*& src) {
+    BluetoothProjectileState projectileState;
+    projectileState.count = std::min<int>(*src++, MAX_PROJECTILES);
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        projectileState.x[i] = readFloat(src);
+    }
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        projectileState.y[i] = readFloat(src);
+    }
+    return projectileState;
+}
 }
 
 BluetoothBridge::BluetoothBridge(JNIEnv* env, jobject activity)
@@ -106,6 +195,7 @@ BluetoothBridge::BluetoothBridge(JNIEnv* env, jobject activity)
 
     sendMethod_        = env->GetMethodID(btClass, "sendPacket", "([B)V");
     isConnectedMethod_ = env->GetMethodID(btClass, "isConnected", "()Z");
+    isHostMethod_      = env->GetMethodID(btClass, "isHostRole", "()Z");
     startAdvMethod_    = env->GetMethodID(btClass, "startAdvertising", "()V");
     startScanMethod_   = env->GetMethodID(btClass, "startScanning", "()V");
     disconnectMethod_  = env->GetMethodID(btClass, "disconnect", "()V");
@@ -120,7 +210,8 @@ BluetoothBridge::BluetoothBridge(JNIEnv* env, jobject activity)
     }
 
     initialized_ = btManager_ && sendMethod_ && isConnectedMethod_ &&
-                   startAdvMethod_ && startScanMethod_ && disconnectMethod_;
+                   isHostMethod_ && startAdvMethod_ && startScanMethod_ &&
+                   disconnectMethod_;
     if (!initialized_) {
         aout << "BluetoothBridge: BluetoothManager method lookup returned null" << std::endl;
         if (btManager_) {
@@ -141,31 +232,55 @@ BluetoothBridge::~BluetoothBridge() {
     instance_ = nullptr;
 }
 
-void BluetoothBridge::sendState(float planeY, float planeVelY,
-                                const float* projX, const float* projY, int projCount) {
+void BluetoothBridge::sendMatchState(const BluetoothMatchState& state) {
     if (!btManager_ || !sendMethod_) return;
 
-    uint8_t packet[PACKET_SIZE] = {};
-    packet[0] = STATE_PACKET_TYPE;
-    memcpy(packet + 1, &planeY,    4);
-    memcpy(packet + 5, &planeVelY, 4);
-    packet[9] = static_cast<uint8_t>(std::min(projCount, 5));
-    for (int i = 0; i < packet[9]; ++i) {
-        memcpy(packet + 10 + i * 4, &projX[i], 4);
-        memcpy(packet + 30 + i * 4, &projY[i], 4);
-    }
+    uint8_t packet[MATCH_PACKET_SIZE] = {};
+    uint8_t* dst = packet;
+    *dst++ = MATCH_STATE_PACKET_TYPE;
+    writeUint16(dst, state.acknowledgedInputSequence);
+    writeFloat(dst, state.hostTimestamp);
+    writePlaneState(dst, state.bluePlane);
+    writePlaneState(dst, state.redPlane);
+    writeProjectileState(dst, state.blueProjectiles);
+    writeProjectileState(dst, state.redProjectiles);
 
-    jbyteArray arr = env_->NewByteArray(PACKET_SIZE);
-    env_->SetByteArrayRegion(arr, 0, PACKET_SIZE, reinterpret_cast<const jbyte*>(packet));
+    jbyteArray arr = env_->NewByteArray(MATCH_PACKET_SIZE);
+    env_->SetByteArrayRegion(arr, 0, MATCH_PACKET_SIZE, reinterpret_cast<const jbyte*>(packet));
     env_->CallVoidMethod(btManager_, sendMethod_, arr);
     env_->DeleteLocalRef(arr);
 }
 
-bool BluetoothBridge::pollReceivedState(BluetoothState& outState) {
+void BluetoothBridge::sendInputState(const BluetoothInputState& input) {
+    if (!btManager_ || !sendMethod_) return;
+
+    uint8_t packet[INPUT_PACKET_SIZE] = {};
+    packet[0] = INPUT_PACKET_TYPE;
+    if (input.upButtonHeld) packet[1] |= INPUT_FLAG_UP;
+    if (input.downButtonHeld) packet[1] |= INPUT_FLAG_DOWN;
+    if (input.fireTapped) packet[1] |= INPUT_FLAG_FIRE;
+    uint8_t* dst = packet + 2;
+    writeUint16(dst, input.sequence);
+
+    jbyteArray arr = env_->NewByteArray(INPUT_PACKET_SIZE);
+    env_->SetByteArrayRegion(arr, 0, INPUT_PACKET_SIZE, reinterpret_cast<const jbyte*>(packet));
+    env_->CallVoidMethod(btManager_, sendMethod_, arr);
+    env_->DeleteLocalRef(arr);
+}
+
+bool BluetoothBridge::pollReceivedMatchState(BluetoothMatchState& outState) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!hasNewState_) return false;
-    outState = latestState_;
-    hasNewState_ = false;
+    if (!hasNewMatchState_) return false;
+    outState = latestMatchState_;
+    hasNewMatchState_ = false;
+    return true;
+}
+
+bool BluetoothBridge::pollReceivedInputState(BluetoothInputState& outInput) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pendingInputStates_.empty()) return false;
+    outInput = pendingInputStates_.front();
+    pendingInputStates_.pop_front();
     return true;
 }
 
@@ -179,11 +294,10 @@ bool BluetoothBridge::pollControlSignal(ControlSignal& outSignal) {
 
 void BluetoothBridge::sendControlSignal(ControlSignal signal) {
     if (!btManager_ || !sendMethod_ || signal == ControlSignal::None) return;
-    uint8_t packet[PACKET_SIZE] = {};
-    packet[0] = static_cast<uint8_t>(signal);
+    uint8_t packet[1] = { static_cast<uint8_t>(signal) };
 
-    jbyteArray arr = env_->NewByteArray(PACKET_SIZE);
-    env_->SetByteArrayRegion(arr, 0, PACKET_SIZE, reinterpret_cast<const jbyte*>(packet));
+    jbyteArray arr = env_->NewByteArray(1);
+    env_->SetByteArrayRegion(arr, 0, 1, reinterpret_cast<const jbyte*>(packet));
     env_->CallVoidMethod(btManager_, sendMethod_, arr);
     env_->DeleteLocalRef(arr);
 }
@@ -197,24 +311,32 @@ bool BluetoothBridge::isReady() const {
     return initialized_;
 }
 
+bool BluetoothBridge::isHostRole() const {
+    if (!initialized_ || !btManager_ || !isHostMethod_) return false;
+    return env_->CallBooleanMethod(btManager_, isHostMethod_) == JNI_TRUE;
+}
+
 void BluetoothBridge::startAdvertising() {
-    if (initialized_ && btManager_ && startAdvMethod_)
+    if (initialized_ && btManager_ && startAdvMethod_) {
         env_->CallVoidMethod(btManager_, startAdvMethod_);
+    }
 }
 
 void BluetoothBridge::startScanning() {
-    if (initialized_ && btManager_ && startScanMethod_)
+    if (initialized_ && btManager_ && startScanMethod_) {
         env_->CallVoidMethod(btManager_, startScanMethod_);
+    }
 }
 
 void BluetoothBridge::disconnect() {
-    if (initialized_ && btManager_ && disconnectMethod_)
+    if (initialized_ && btManager_ && disconnectMethod_) {
         env_->CallVoidMethod(btManager_, disconnectMethod_);
+    }
 }
 
 void BluetoothBridge::onPacketReceived(const uint8_t* data, int len) {
     if (len < 1) return;
-    uint8_t packetType = data[0];
+    const uint8_t packetType = data[0];
 
     if (packetType == static_cast<uint8_t>(ControlSignal::Pause)
         || packetType == static_cast<uint8_t>(ControlSignal::Resume)
@@ -225,22 +347,43 @@ void BluetoothBridge::onPacketReceived(const uint8_t* data, int len) {
         return;
     }
 
-    if (packetType != STATE_PACKET_TYPE || len < 10) return;
-    BluetoothState state;
-    memcpy(&state.planeY,    data + 1, 4);
-    memcpy(&state.planeVelY, data + 5, 4);
-    state.projCount = data[9];
-    if (state.projCount > 5) state.projCount = 5;
-    for (int i = 0; i < state.projCount; ++i) {
-        if (10 + i * 4 + 4 <= len) memcpy(&state.projX[i], data + 10 + i * 4, 4);
-        if (30 + i * 4 + 4 <= len) memcpy(&state.projY[i], data + 30 + i * 4, 4);
+    if (packetType == INPUT_PACKET_TYPE) {
+        if (len < INPUT_PACKET_SIZE) return;
+        const uint8_t flags = data[1];
+        const uint8_t* src = data + 2;
+        BluetoothInputState inputState;
+        inputState.upButtonHeld = (flags & INPUT_FLAG_UP) != 0;
+        inputState.downButtonHeld = (flags & INPUT_FLAG_DOWN) != 0;
+        inputState.fireTapped = (flags & INPUT_FLAG_FIRE) != 0;
+        inputState.sequence = readUint16(src);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!pendingInputStates_.empty()
+            && pendingInputStates_.back().sequence == inputState.sequence) {
+            pendingInputStates_.back().upButtonHeld = inputState.upButtonHeld;
+            pendingInputStates_.back().downButtonHeld = inputState.downButtonHeld;
+            pendingInputStates_.back().fireTapped = pendingInputStates_.back().fireTapped || inputState.fireTapped;
+        } else {
+            pendingInputStates_.push_back(inputState);
+        }
+        return;
     }
+
+    if (packetType != MATCH_STATE_PACKET_TYPE || len < MATCH_PACKET_SIZE) return;
+
+    const uint8_t* src = data + 1;
+    BluetoothMatchState state;
+    state.acknowledgedInputSequence = readUint16(src);
+    state.hostTimestamp = readFloat(src);
+    state.bluePlane = readPlaneState(src);
+    state.redPlane = readPlaneState(src);
+    state.blueProjectiles = readProjectileState(src);
+    state.redProjectiles = readProjectileState(src);
+
     std::lock_guard<std::mutex> lock(mutex_);
-    latestState_ = state;
-    hasNewState_ = true;
+    latestMatchState_ = state;
+    hasNewMatchState_ = true;
 }
 
-// JNI callback invoked from Kotlin receive thread
 extern "C" JNIEXPORT void JNICALL
 Java_com_abocha_byplanes_BluetoothManager_onPacketReceived(
         JNIEnv* env, jobject /*obj*/, jbyteArray data, jint len) {

@@ -1,6 +1,8 @@
 #ifndef BYPLANES_GAME_H
 #define BYPLANES_GAME_H
 
+#include <cstdint>
+#include <deque>
 #include <memory>
 
 #include "Renderer.h"
@@ -44,6 +46,8 @@ private:
     void handlePauseUiTap(float wx, float wy);
     void processBluetoothControlSignals();
     void leaveMatchToMainMenu(bool notifyRemote);
+    void enqueueRemoteBluetoothInput(const BluetoothInputState &input);
+    BluetoothInputState consumeRemoteBluetoothInputForStep();
 
     android_app *app_;
     std::unique_ptr<Renderer> renderer_;
@@ -89,6 +93,12 @@ private:
 
     // Bluetooth lobby
     BluetoothBridge *btBridge_ = nullptr;
+    std::deque<BluetoothInputState> remoteBluetoothInputBuffer_;
+    BluetoothInputState lastAppliedRemoteBluetoothInput_;
+    uint16_t consumedRemoteBluetoothInputSequence_ = 0;
+    uint16_t localBluetoothInputSequence_ = 0;
+    float bluetoothSimulationAccumulator_ = 0.f;
+    bool pendingBluetoothLocalFireTap_ = false;
     JavaVM *javaVM_ = nullptr;
     JNIEnv *jniEnv_ = nullptr;
     Sprite lobbyBtn1_;          // HOST GAME

@@ -65,4 +65,10 @@ class MainActivity : GameActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         BluetoothManager.onPermissionsResult(requestCode, grantResults)
     }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        BluetoothManager.onActivityResult(requestCode, resultCode)
+    }
 }

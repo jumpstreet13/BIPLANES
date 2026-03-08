@@ -6,6 +6,25 @@ namespace {
 float planeHalfExtentX(float angle) {
     return fabsf(cosf(angle)) * PLANE_HALF_W + fabsf(sinf(angle)) * PLANE_HALF_H;
 }
+
+void drawExplosionEffect(
+    const Shader &shader,
+    const std::shared_ptr<TextureAsset> (&explosionFrames)[EXPLOSION_FRAMES],
+    float timer,
+    float x,
+    float y
+) {
+    if (timer <= 0.f) return;
+    int frame = (int)((1.f - timer / EXPLOSION_DURATION) * EXPLOSION_FRAMES);
+    frame = std::clamp(frame, 0, EXPLOSION_FRAMES - 1);
+    if (!explosionFrames[frame]) return;
+
+    Sprite expl;
+    expl.init(explosionFrames[frame], PLANE_HALF_W * 1.8f, PLANE_HALF_H * 1.8f);
+    expl.x = x;
+    expl.y = y;
+    expl.draw(shader);
+}
 }
 
 // Smooth orientation: no flip, just continuous rotation.
@@ -37,6 +56,10 @@ void Plane::init(std::shared_ptr<TextureAsset> texture,
     explosionTimer = 0.f;
     respawnTimer = 0.f;
     damageEffectTimer = 0.f;
+    predictedExplosionTimer = 0.f;
+    impactEffectTimer = 0.f;
+    impactEffectX = 0.f;
+    impactEffectY = 0.f;
     smokeTex = std::move(smoke);
     fireTex = std::move(fire);
     sparkTex = std::move(spark);
@@ -51,7 +74,7 @@ void Plane::setGrounded() {
     grounded = true;
     groundSpeed = 0.f;
     y = GROUND_Y + PLANE_HALF_H + 0.02f;
-    angle = 0.f;  // facing right
+    angle = spawnFacingLeft ? (float)M_PI : 0.f;
     sprite.x = x;
     sprite.y = y;
     updateSpriteOrientation(sprite, angle, spawnFacingLeft);
@@ -63,8 +86,7 @@ void Plane::update(float dt, bool thrustUp, bool thrustDown) {
         if (explosionTimer <= 0.f) {
             reset(spawnX, spawnFacingLeft);
             respawnTimer = RESPAWN_INVULN;
-            // Player respawns on ground
-            if (!spawnFacingLeft) {
+            if (respawnOnGround) {
                 setGrounded();
                 x = spawnX;
             }
@@ -86,12 +108,18 @@ void Plane::update(float dt, bool thrustUp, bool thrustDown) {
         groundSpeed += TAKEOFF_ACCEL * dt;
         if (groundSpeed > PLANE_SPEED) groundSpeed = PLANE_SPEED;
 
-        // Either button angles nose UP (positive angle = up)
-        if (thrustUp || thrustDown) angle += ROTATION_SPEED * dt;
-        if (angle < 0.f) angle = 0.f;
-        if (angle > (float)M_PI * 0.4f) angle = (float)M_PI * 0.4f;
+        if (thrustUp)   angle += ROTATION_SPEED * dt;
+        if (thrustDown) angle -= ROTATION_SPEED * dt;
 
-        x += groundSpeed * dt;
+        if (spawnFacingLeft) {
+            if (angle > (float)M_PI) angle = (float)M_PI;
+            if (angle < (float)M_PI * 0.6f) angle = (float)M_PI * 0.6f;
+        } else {
+            if (angle < 0.f) angle = 0.f;
+            if (angle > (float)M_PI * 0.4f) angle = (float)M_PI * 0.4f;
+        }
+
+        x += cosf(angle) * groundSpeed * dt;
         x = Utility::wrapWorldX(x, worldHalfW, planeHalfExtentX(angle));
 
         if (sinf(angle) > TAKEOFF_LIFTOFF && groundSpeed > PLANE_SPEED * 0.5f) {
@@ -143,6 +171,10 @@ void Plane::reset(float startX, bool facingLeft) {
     exploding = false;
     explosionTimer = 0.f;
     damageEffectTimer = 0.f;
+    predictedExplosionTimer = 0.f;
+    impactEffectTimer = 0.f;
+    impactEffectX = 0.f;
+    impactEffectY = 0.f;
     sprite.x = x;
     sprite.y = y;
     updateSpriteOrientation(sprite, angle, facingLeft);
@@ -163,20 +195,39 @@ void Plane::triggerExplosion() {
     grounded = false;
     hp = 0;
     explosionTimer = EXPLOSION_DURATION;
+    predictedExplosionTimer = 0.f;
+    impactEffectTimer = 0.f;
     respawnTimer = 0.f;
 }
 
+void Plane::triggerImpactEffect(float worldX, float worldY) {
+    impactEffectTimer = IMPACT_EFFECT_DURATION;
+    impactEffectX = worldX;
+    impactEffectY = worldY;
+}
+
+void Plane::triggerPredictedExplosion() {
+    if (exploding) return;
+    predictedExplosionTimer = EXPLOSION_DURATION;
+}
+
+void Plane::updatePredictedEffects(float dt) {
+    if (predictedExplosionTimer > 0.f) {
+        predictedExplosionTimer -= dt;
+        if (predictedExplosionTimer < 0.f) predictedExplosionTimer = 0.f;
+    }
+    if (impactEffectTimer > 0.f) {
+        impactEffectTimer -= dt;
+        if (impactEffectTimer < 0.f) impactEffectTimer = 0.f;
+    }
+}
+
 void Plane::draw(const Shader& shader) const {
+    const float renderX = sprite.x;
+    const float renderY = sprite.y;
+
     if (exploding) {
-        int frame = (int)((1.f - explosionTimer / EXPLOSION_DURATION) * EXPLOSION_FRAMES);
-        frame = std::min(frame, EXPLOSION_FRAMES - 1);
-        if (explosionFrames[frame]) {
-            Sprite expl;
-            expl.init(explosionFrames[frame], PLANE_HALF_W * 1.8f, PLANE_HALF_H * 1.8f);
-            expl.x = x;
-            expl.y = y;
-            expl.draw(shader);
-        }
+        drawExplosionEffect(shader, explosionFrames, explosionTimer, renderX, renderY);
         return;
     }
     if (!isAlive) return;
@@ -189,6 +240,10 @@ void Plane::draw(const Shader& shader) const {
 
     sprite.draw(shader);
 
+    if (predictedExplosionTimer > 0.f) {
+        drawExplosionEffect(shader, explosionFrames, predictedExplosionTimer, renderX, renderY);
+    }
+
     // Damage effects
     int damage = PLANE_MAX_HP - hp;
 
@@ -198,8 +253,8 @@ void Plane::draw(const Shader& shader) const {
         float uvW = 1.f / (float)SMOKE_FRAMES; // 0.2 per frame
         Sprite sm;
         sm.init(smokeTex, 0.15f, 0.15f);
-        sm.x = x;
-        sm.y = y;
+        sm.x = renderX;
+        sm.y = renderY;
         sm.uvLeft  = frame * uvW;
         sm.uvRight = (frame + 1) * uvW;
         sm.draw(shader);
@@ -211,10 +266,19 @@ void Plane::draw(const Shader& shader) const {
         float uvW = 1.f / (float)FIRE_FRAMES;
         Sprite fi;
         fi.init(fireTex, 0.15f, 0.15f);
-        fi.x = x;
-        fi.y = y;
+        fi.x = renderX;
+        fi.y = renderY;
         fi.uvLeft  = frame * uvW;
         fi.uvRight = (frame + 1) * uvW;
         fi.draw(shader);
+    }
+
+    if (impactEffectTimer > 0.f && sparkTex) {
+        Sprite spark;
+        spark.init(sparkTex, 0.16f, 0.16f);
+        spark.x = impactEffectX;
+        spark.y = impactEffectY;
+        spark.tintA = impactEffectTimer / IMPACT_EFFECT_DURATION;
+        spark.draw(shader);
     }
 }
