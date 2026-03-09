@@ -149,6 +149,29 @@ private:
     void resetRemotePlaneRenderState();
     void advanceRemotePlaneRenderSample();
     void drawRemotePlane(const Shader &shader, const Plane &plane) const;
+    bool computeRemotePlaneRenderOffset(float &outOffsetX, float &outOffsetY) const;
+    void resetRemoteBulletRenderState();
+    void updateBulletRenderVisibleAges(
+        const ProjectilePool &pool,
+        std::array<float, MAX_PROJECTILES> &visibleAges,
+        std::array<bool, MAX_PROJECTILES> &wasActive,
+        std::array<float, MAX_PROJECTILES> &originX,
+        std::array<float, MAX_PROJECTILES> &originY,
+        float renderedAngle,
+        float renderedMuzzleX,
+        float renderedMuzzleY,
+        float dt
+    );
+    void drawProjectilePoolWithOffset(
+        const Shader &shader,
+        const ProjectilePool &pool,
+        const std::array<float, MAX_PROJECTILES> &visibleAges,
+        const std::array<float, MAX_PROJECTILES> &originX,
+        const std::array<float, MAX_PROJECTILES> &originY,
+        float offsetX,
+        float offsetY,
+        float fadeDuration
+    ) const;
     void pushBufferedSnapshot(const BluetoothMatchState &state);
     bool sampleBufferedSnapshot(BluetoothMatchState &outState) const;
     float currentInterpolationDelay() const;
@@ -186,6 +209,14 @@ private:
     PlaneRenderSmoothingState localPlaneRenderSmoothing_{};
     std::deque<RemotePlaneRenderSample> remotePlaneRenderHistory_;
     RemotePlaneRenderSample renderedRemotePlaneRenderSample_{};
+    std::array<float, MAX_PROJECTILES> playerBulletRenderVisibleAges_{};
+    std::array<float, MAX_PROJECTILES> enemyBulletRenderVisibleAges_{};
+    std::array<bool, MAX_PROJECTILES> playerBulletRenderWasActive_{};
+    std::array<bool, MAX_PROJECTILES> enemyBulletRenderWasActive_{};
+    std::array<float, MAX_PROJECTILES> playerBulletRenderOriginX_{};
+    std::array<float, MAX_PROJECTILES> playerBulletRenderOriginY_{};
+    std::array<float, MAX_PROJECTILES> enemyBulletRenderOriginX_{};
+    std::array<float, MAX_PROJECTILES> enemyBulletRenderOriginY_{};
     float clientClock_ = 0.f;
     float hostToLocalClockOffset_ = 0.f;
     bool hasHostClockOffset_ = false;

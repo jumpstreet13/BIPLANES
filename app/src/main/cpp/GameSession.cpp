@@ -37,7 +37,9 @@ constexpr int BLUETOOTH_REMOTE_RENDER_DELAY_STEPS = 3;
 constexpr float BLUETOOTH_REMOTE_RENDER_SNAP_X = 0.9f;
 constexpr float BLUETOOTH_REMOTE_RENDER_SNAP_Y = 0.6f;
 constexpr size_t BLUETOOTH_REMOTE_RENDER_HISTORY_LIMIT = 8;
-constexpr float BLUETOOTH_REMOTE_RENDER_FOLLOW_SPEED = 9.f;
+constexpr float BLUETOOTH_REMOTE_RENDER_FOLLOW_SPEED = 6.f;
+constexpr float BLUETOOTH_REMOTE_BULLET_RENDER_OFFSET_FADE = 0.35f;
+constexpr float BLUETOOTH_REMOTE_BULLET_FIRST_SEEN_FORWARD = BULLET_SPEED * (1.5f / 60.f);
 
 float normalizeAngle(float angle) {
     while (angle > static_cast<float>(M_PI)) angle -= 2.f * static_cast<float>(M_PI);
@@ -332,6 +334,7 @@ void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode,
     simulationTime_ = 0.f;
     bluetoothRemoteRenderAlpha_ = 1.f;
     resetRemotePlaneRenderState();
+    resetRemoteBulletRenderState();
 }
 
 bool GameSession::update(float dt, const TouchState &input) {
@@ -566,8 +569,44 @@ void GameSession::draw(const Shader &shader) const {
     } else {
         enemy_.draw(shader);
     }
-    playerBullets_.drawAll(shader);
-    enemyBullets_.drawAll(shader);
+
+    float remoteBulletOffsetX = 0.f;
+    float remoteBulletOffsetY = 0.f;
+    const bool hasRemoteBulletOffset = mode_ == GameMode::VsBluetooth
+                                       && computeRemotePlaneRenderOffset(
+                                           remoteBulletOffsetX,
+                                           remoteBulletOffsetY
+                                       );
+
+    if (mode_ == GameMode::VsBluetooth && !localControlsBlue_ && hasRemoteBulletOffset) {
+        drawProjectilePoolWithOffset(
+            shader,
+            playerBullets_,
+            playerBulletRenderVisibleAges_,
+            playerBulletRenderOriginX_,
+            playerBulletRenderOriginY_,
+            remoteBulletOffsetX,
+            remoteBulletOffsetY,
+            BLUETOOTH_REMOTE_BULLET_RENDER_OFFSET_FADE
+        );
+    } else {
+        playerBullets_.drawAll(shader);
+    }
+
+    if (mode_ == GameMode::VsBluetooth && localControlsBlue_ && hasRemoteBulletOffset) {
+        drawProjectilePoolWithOffset(
+            shader,
+            enemyBullets_,
+            enemyBulletRenderVisibleAges_,
+            enemyBulletRenderOriginX_,
+            enemyBulletRenderOriginY_,
+            remoteBulletOffsetX,
+            remoteBulletOffsetY,
+            BLUETOOTH_REMOTE_BULLET_RENDER_OFFSET_FADE
+        );
+    } else {
+        enemyBullets_.drawAll(shader);
+    }
 }
 
 int GameSession::getWinner() const {
@@ -639,6 +678,7 @@ void GameSession::reset() {
     simulationTime_ = 0.f;
     bluetoothRemoteRenderAlpha_ = 1.f;
     resetRemotePlaneRenderState();
+    resetRemoteBulletRenderState();
 }
 
 BluetoothMatchState GameSession::buildBluetoothMatchState(uint16_t acknowledgedInputSequence) const {
@@ -733,6 +773,39 @@ void GameSession::updateBluetoothRemoteRender(float dt) {
     renderedRemotePlaneRenderSample_.isAlive = targetSample.isAlive;
     renderedRemotePlaneRenderSample_.exploding = targetSample.exploding;
     renderedRemotePlaneRenderSample_.valid = true;
+
+    const float renderedMuzzleX = Utility::wrapWorldX(
+        renderedRemotePlaneRenderSample_.x
+        + cosf(renderedRemotePlaneRenderSample_.angle) * PROJECTILE_MUZZLE_OFFSET,
+        worldHalfW,
+        BULLET_HALF_SIZE
+    );
+    const float renderedMuzzleY =
+        renderedRemotePlaneRenderSample_.y
+        + sinf(renderedRemotePlaneRenderSample_.angle) * PROJECTILE_MUZZLE_OFFSET;
+
+    updateBulletRenderVisibleAges(
+        playerBullets_,
+        playerBulletRenderVisibleAges_,
+        playerBulletRenderWasActive_,
+        playerBulletRenderOriginX_,
+        playerBulletRenderOriginY_,
+        renderedRemotePlaneRenderSample_.angle,
+        renderedMuzzleX,
+        renderedMuzzleY,
+        dt
+    );
+    updateBulletRenderVisibleAges(
+        enemyBullets_,
+        enemyBulletRenderVisibleAges_,
+        enemyBulletRenderWasActive_,
+        enemyBulletRenderOriginX_,
+        enemyBulletRenderOriginY_,
+        renderedRemotePlaneRenderSample_.angle,
+        renderedMuzzleX,
+        renderedMuzzleY,
+        dt
+    );
 }
 
 GameSession::RemotePlaneRenderSample GameSession::captureRemotePlaneRenderSample() const {
@@ -827,6 +900,122 @@ void GameSession::drawRemotePlane(const Shader &shader, const Plane &plane) cons
         renderedRemotePlaneRenderSample_.y,
         renderedRemotePlaneRenderSample_.angle
     );
+}
+
+bool GameSession::computeRemotePlaneRenderOffset(float &outOffsetX, float &outOffsetY) const {
+    if (mode_ != GameMode::VsBluetooth || !renderedRemotePlaneRenderSample_.valid) {
+        return false;
+    }
+
+    const Plane &remotePlane = localControlsBlue_ ? enemy_ : player_;
+    const float worldHalfW = worldHalfWidthForAspect(aspect_);
+    const float actualMuzzleX = Utility::wrapWorldX(
+        remotePlane.x + cosf(remotePlane.angle) * PROJECTILE_MUZZLE_OFFSET,
+        worldHalfW,
+        BULLET_HALF_SIZE
+    );
+    const float actualMuzzleY = remotePlane.y + sinf(remotePlane.angle) * PROJECTILE_MUZZLE_OFFSET;
+    const float renderedMuzzleX = Utility::wrapWorldX(
+        renderedRemotePlaneRenderSample_.x
+        + cosf(renderedRemotePlaneRenderSample_.angle) * PROJECTILE_MUZZLE_OFFSET,
+        worldHalfW,
+        BULLET_HALF_SIZE
+    );
+    const float renderedMuzzleY =
+        renderedRemotePlaneRenderSample_.y
+        + sinf(renderedRemotePlaneRenderSample_.angle) * PROJECTILE_MUZZLE_OFFSET;
+
+    outOffsetX = shortestWrappedDx(actualMuzzleX, renderedMuzzleX, worldHalfW);
+    outOffsetY = renderedMuzzleY - actualMuzzleY;
+    return true;
+}
+
+void GameSession::resetRemoteBulletRenderState() {
+    playerBulletRenderVisibleAges_.fill(0.f);
+    enemyBulletRenderVisibleAges_.fill(0.f);
+    playerBulletRenderWasActive_.fill(false);
+    enemyBulletRenderWasActive_.fill(false);
+    playerBulletRenderOriginX_.fill(0.f);
+    playerBulletRenderOriginY_.fill(0.f);
+    enemyBulletRenderOriginX_.fill(0.f);
+    enemyBulletRenderOriginY_.fill(0.f);
+}
+
+void GameSession::updateBulletRenderVisibleAges(
+    const ProjectilePool &pool,
+    std::array<float, MAX_PROJECTILES> &visibleAges,
+    std::array<bool, MAX_PROJECTILES> &wasActive,
+    std::array<float, MAX_PROJECTILES> &originX,
+    std::array<float, MAX_PROJECTILES> &originY,
+    float renderedAngle,
+    float renderedMuzzleX,
+    float renderedMuzzleY,
+    float dt
+) {
+    const float worldHalfW = worldHalfWidthForAspect(aspect_);
+    const auto &projectiles = pool.getProjectiles();
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        if (!projectiles[i].active) {
+            visibleAges[i] = 0.f;
+            wasActive[i] = false;
+            continue;
+        }
+
+        if (!wasActive[i]) {
+            visibleAges[i] = 0.f;
+            wasActive[i] = true;
+            originX[i] = Utility::wrapWorldX(
+                renderedMuzzleX + cosf(renderedAngle) * BLUETOOTH_REMOTE_BULLET_FIRST_SEEN_FORWARD,
+                worldHalfW,
+                BULLET_HALF_SIZE
+            );
+            originY[i] = renderedMuzzleY + sinf(renderedAngle) * BLUETOOTH_REMOTE_BULLET_FIRST_SEEN_FORWARD;
+            continue;
+        }
+
+        visibleAges[i] = std::min(visibleAges[i] + dt, BULLET_LIFETIME);
+    }
+}
+
+void GameSession::drawProjectilePoolWithOffset(
+    const Shader &shader,
+    const ProjectilePool &pool,
+    const std::array<float, MAX_PROJECTILES> &visibleAges,
+    const std::array<float, MAX_PROJECTILES> &originX,
+    const std::array<float, MAX_PROJECTILES> &originY,
+    float offsetX,
+    float offsetY,
+    float fadeDuration
+) const {
+    const float worldHalfW = worldHalfWidthForAspect(aspect_);
+    const float safeFadeDuration = std::max(0.0001f, fadeDuration);
+    int projectileIndex = 0;
+    for (const auto &projectile : pool.getProjectiles()) {
+        if (!projectile.active) {
+            projectileIndex++;
+            continue;
+        }
+
+        const float visibleAge = std::clamp(visibleAges[projectileIndex], 0.f, BULLET_LIFETIME);
+        const float progress = std::clamp(visibleAge / safeFadeDuration, 0.f, 1.f);
+        const float offsetAlpha = 1.f - progress;
+        Sprite renderSprite = projectile.sprite;
+        const float targetX = Utility::wrapWorldX(
+            projectile.x + offsetX * offsetAlpha,
+            worldHalfW,
+            BULLET_HALF_SIZE
+        );
+        const float targetY = projectile.y + offsetY * offsetAlpha;
+        renderSprite.x = Utility::wrapWorldX(
+            originX[projectileIndex]
+            + shortestWrappedDx(originX[projectileIndex], targetX, worldHalfW) * progress,
+            worldHalfW,
+            BULLET_HALF_SIZE
+        );
+        renderSprite.y = originY[projectileIndex] + (targetY - originY[projectileIndex]) * progress;
+        renderSprite.draw(shader);
+        projectileIndex++;
+    }
 }
 
 TouchState GameSession::makePlaneTouchState(bool upHeld, bool downHeld, bool fireTapped) {
