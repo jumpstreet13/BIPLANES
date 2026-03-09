@@ -274,9 +274,9 @@ void BluetoothBridge::sendInputState(const BluetoothInputState& input) {
 
 bool BluetoothBridge::pollReceivedMatchState(BluetoothMatchState& outState) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!hasNewMatchState_) return false;
-    outState = latestMatchState_;
-    hasNewMatchState_ = false;
+    if (pendingMatchStates_.empty()) return false;
+    outState = pendingMatchStates_.front();
+    pendingMatchStates_.pop_front();
     return true;
 }
 
@@ -411,8 +411,10 @@ void BluetoothBridge::onPacketReceived(const uint8_t* data, int len) {
     state.redProjectiles = readProjectileState(src);
 
     std::lock_guard<std::mutex> lock(mutex_);
-    latestMatchState_ = state;
-    hasNewMatchState_ = true;
+    pendingMatchStates_.push_back(state);
+    while (pendingMatchStates_.size() > 96) {
+        pendingMatchStates_.pop_front();
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL

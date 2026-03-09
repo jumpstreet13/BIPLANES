@@ -272,8 +272,21 @@ BluetoothInputState Game::consumeRemoteBluetoothInputForStep() {
         return stepInput;
     }
 
+    // Use the freshest control state available for this simulation step.
+    // This prevents the host from replaying stale input packets one-by-one
+    // after a brief Bluetooth delay, which made the client-controlled plane
+    // fall behind and get corrected back aggressively.
     stepInput = remoteBluetoothInputBuffer_.front();
     remoteBluetoothInputBuffer_.pop_front();
+    while (!remoteBluetoothInputBuffer_.empty()) {
+        const BluetoothInputState newerInput = remoteBluetoothInputBuffer_.front();
+        remoteBluetoothInputBuffer_.pop_front();
+        stepInput.upButtonHeld = newerInput.upButtonHeld;
+        stepInput.downButtonHeld = newerInput.downButtonHeld;
+        stepInput.fireTapped = stepInput.fireTapped || newerInput.fireTapped;
+        stepInput.sequence = newerInput.sequence;
+    }
+
     consumedRemoteBluetoothInputSequence_ = stepInput.sequence;
     lastAppliedRemoteBluetoothInput_ = stepInput;
     lastAppliedRemoteBluetoothInput_.fireTapped = false;
@@ -544,70 +557,46 @@ void Game::update(float dt) {
             bool gameOver = false;
             if (pendingMode_ == GameMode::VsBluetooth && btBridge_) {
                 pendingBluetoothLocalFireTap_ = pendingBluetoothLocalFireTap_ || touch.fireTapped;
+                BluetoothInputState remoteInput;
+                while (btBridge_->pollReceivedInputState(remoteInput)) {
+                    session_.queueBluetoothRemoteInput(remoteInput);
+                }
+                session_.processBluetoothRollbackCorrections();
+
                 bluetoothSimulationAccumulator_ = std::min(
                     bluetoothSimulationAccumulator_ + dt,
                     BLUETOOTH_SIMULATION_STEP * BLUETOOTH_MAX_STEPS_PER_FRAME
                 );
 
-                if (btBridge_->isHostRole()) {
-                    BluetoothInputState polledInput;
-                    while (btBridge_->pollReceivedInputState(polledInput)) {
-                        enqueueRemoteBluetoothInput(polledInput);
+                while (bluetoothSimulationAccumulator_ >= BLUETOOTH_SIMULATION_STEP) {
+                    BluetoothInputState localInput;
+                    localInput.upButtonHeld = touch.upButtonHeld;
+                    localInput.downButtonHeld = touch.downButtonHeld;
+                    localInput.fireTapped = pendingBluetoothLocalFireTap_;
+                    localInput.sequence = static_cast<uint16_t>(localBluetoothInputSequence_ + 1);
+                    localBluetoothInputSequence_ = localInput.sequence;
+
+                    btBridge_->sendInputState(localInput);
+                    gameOver = session_.updateBluetoothRollback(
+                        BLUETOOTH_SIMULATION_STEP,
+                        localInput
+                    );
+
+                    pendingBluetoothLocalFireTap_ = false;
+                    bluetoothSimulationAccumulator_ -= BLUETOOTH_SIMULATION_STEP;
+
+                    while (btBridge_->pollReceivedInputState(remoteInput)) {
+                        session_.queueBluetoothRemoteInput(remoteInput);
                     }
-
-                    while (bluetoothSimulationAccumulator_ >= BLUETOOTH_SIMULATION_STEP) {
-                        TouchState stepTouch = touch;
-                        stepTouch.fireTapped = pendingBluetoothLocalFireTap_;
-                        const BluetoothInputState remoteStepInput = consumeRemoteBluetoothInputForStep();
-                        gameOver = session_.updateBluetoothHost(
-                            BLUETOOTH_SIMULATION_STEP,
-                            stepTouch,
-                            remoteStepInput
-                        );
-                        pendingBluetoothLocalFireTap_ = false;
-                        bluetoothSimulationAccumulator_ -= BLUETOOTH_SIMULATION_STEP;
-                        btBridge_->sendMatchState(
-                            session_.buildBluetoothMatchState(consumedRemoteBluetoothInputSequence_)
-                        );
-                        if (gameOver) {
-                            break;
-                        }
-                    }
-                } else {
-                    BluetoothMatchState matchState;
-                    while (btBridge_->pollReceivedMatchState(matchState)) {
-                        session_.applyBluetoothMatchState(matchState);
-                    }
-
-                    while (bluetoothSimulationAccumulator_ >= BLUETOOTH_SIMULATION_STEP) {
-                        TouchState stepTouch = touch;
-                        stepTouch.fireTapped = pendingBluetoothLocalFireTap_;
-
-                        BluetoothInputState localInput;
-                        localInput.upButtonHeld = stepTouch.upButtonHeld;
-                        localInput.downButtonHeld = stepTouch.downButtonHeld;
-                        localInput.fireTapped = stepTouch.fireTapped;
-                        localInput.sequence = ++localBluetoothInputSequence_;
-                        btBridge_->sendInputState(localInput);
-
-                        session_.updateBluetoothClient(
-                            BLUETOOTH_SIMULATION_STEP,
-                            stepTouch,
-                            localInput.sequence
-                        );
-                        pendingBluetoothLocalFireTap_ = false;
-                        bluetoothSimulationAccumulator_ -= BLUETOOTH_SIMULATION_STEP;
-
-                        while (btBridge_->pollReceivedMatchState(matchState)) {
-                            session_.applyBluetoothMatchState(matchState);
-                        }
-
-                        gameOver = session_.getWinner() != 0;
-                        if (gameOver) {
-                            break;
-                        }
+                    session_.processBluetoothRollbackCorrections();
+                    gameOver = gameOver || session_.getWinner() != 0;
+                    if (gameOver) {
+                        break;
                     }
                 }
+
+                session_.processBluetoothRollbackCorrections();
+                gameOver = gameOver || session_.getWinner() != 0;
             } else {
                 gameOver = session_.update(dt, touch);
             }

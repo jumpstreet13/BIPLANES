@@ -11,18 +11,27 @@ constexpr float CLIENT_PROJECTILE_SMOOTHING = 18.f;
 constexpr float CLIENT_REMOTE_EXTRAPOLATION_MAX = 0.08f;
 constexpr float CLIENT_SNAPSHOT_BUFFER_MIN = 0.06f;
 constexpr float CLIENT_SNAPSHOT_BUFFER_MAX = 0.20f;
+constexpr float REMOTE_OWNED_EXTRAPOLATION_MAX = 0.22f;
+constexpr float REMOTE_OWNED_SNAPSHOT_BUFFER_MIN = 0.0f;
+constexpr float REMOTE_OWNED_SNAPSHOT_BUFFER_MAX = 0.035f;
 constexpr float CLIENT_LOCAL_RENDER_ERROR_DECAY = 12.f;
 constexpr float CLIENT_LOCAL_RENDER_ERROR_MAX_X = 0.85f;
 constexpr float CLIENT_LOCAL_RENDER_ERROR_MAX_Y = 0.55f;
 constexpr float CLIENT_LOCAL_RENDER_ERROR_MAX_ANGLE = 0.7f;
 constexpr float CLIENT_LOCAL_PROJECTILE_CORRECTION_MAX_X = 0.9f;
 constexpr float CLIENT_LOCAL_PROJECTILE_CORRECTION_MAX_Y = 0.6f;
+constexpr float CLIENT_LOCAL_RECONCILE_DEAD_ZONE_X = 0.05f;
+constexpr float CLIENT_LOCAL_RECONCILE_DEAD_ZONE_Y = 0.08f;
+constexpr float CLIENT_LOCAL_RECONCILE_DEAD_ZONE_ANGLE = 0.07f;
 constexpr float CLIENT_LOCAL_SOFT_RECONCILE_MAX_X = 0.55f;
 constexpr float CLIENT_LOCAL_SOFT_RECONCILE_MAX_Y = 0.35f;
 constexpr float CLIENT_LOCAL_SOFT_RECONCILE_MAX_ANGLE = 0.45f;
 constexpr float CLIENT_LOCAL_SOFT_RECONCILE_MIN_ALPHA = 0.18f;
 constexpr float CLIENT_LOCAL_SOFT_RECONCILE_MAX_ALPHA = 0.55f;
+constexpr float CLIENT_LOCAL_RECONCILE_LARGE_ALPHA = 0.72f;
 constexpr size_t CLIENT_SNAPSHOT_HISTORY_LIMIT = 32;
+constexpr size_t ROLLBACK_HISTORY_LIMIT = 240;
+constexpr uint8_t REMOTE_PREDICTION_HOLD_FRAMES = 2;
 constexpr float PROJECTILE_MUZZLE_OFFSET = PLANE_HALF_W + BULLET_HALF_SIZE * 1.4f;
 
 float normalizeAngle(float angle) {
@@ -85,6 +94,13 @@ bool isSequenceNewer(uint16_t candidate, uint16_t reference) {
     return static_cast<int16_t>(candidate - reference) > 0;
 }
 
+bool bluetoothInputsEqual(const BluetoothInputState &lhs, const BluetoothInputState &rhs) {
+    return lhs.upButtonHeld == rhs.upButtonHeld
+           && lhs.downButtonHeld == rhs.downButtonHeld
+           && lhs.fireTapped == rhs.fireTapped
+           && lhs.sequence == rhs.sequence;
+}
+
 void spawnProjectileFromPlane(
     ProjectilePool &pool,
     const Plane &plane,
@@ -133,6 +149,14 @@ bool planeHasAuthoritativeStateChange(const Plane &plane, const BluetoothPlaneSt
            || plane.isAlive != state.isAlive
            || plane.hp != state.hp
            || plane.score != state.score;
+}
+
+bool planeHasAuthoritativeEventChange(const Plane &plane, const BluetoothPlaneState &state) {
+    return plane.exploding != state.exploding
+           || plane.isAlive != state.isAlive
+           || plane.hp != state.hp
+           || plane.score != state.score
+           || (plane.respawnTimer <= 0.f && state.respawnTimer > 0.f);
 }
 
 bool planeStatesDifferSignificantly(const BluetoothPlaneState &from, const BluetoothPlaneState &to) {
@@ -232,6 +256,7 @@ BluetoothProjectileState interpolateProjectileState(
     }
     return result;
 }
+
 }
 
 void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode, AiDifficulty difficulty, bool localControlsBlue) {
@@ -274,6 +299,16 @@ void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode,
 
     playerFireCooldown_ = 0.f;
     enemyFireCooldown_ = 0.f;
+    rollbackFrames_.clear();
+    pendingRemoteInputs_.clear();
+    lastPredictedRemoteInput_ = {};
+    hasLastPredictedRemoteInput_ = false;
+    predictedRemoteInputAge_ = 0;
+    hasPendingRollbackCorrection_ = false;
+    pendingRollbackSequence_ = 0;
+    hasRemoteOwnedState_ = false;
+    remoteOwnedState_ = {};
+    remoteOwnedSnapshotBuffer_.clear();
     clientHasTargetState_ = false;
     clientStateInitialized_ = false;
     pendingLocalInputs_.clear();
@@ -282,9 +317,13 @@ void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode,
     clientClock_ = 0.f;
     hostToLocalClockOffset_ = 0.f;
     hasHostClockOffset_ = false;
+    remoteOwnedClockOffset_ = 0.f;
+    hasRemoteOwnedClockOffset_ = false;
     smoothedRtt_ = 0.08f;
     smoothedSnapshotInterval_ = 1.f / 60.f;
     snapshotJitter_ = 0.01f;
+    remoteOwnedSnapshotInterval_ = 1.f / 60.f;
+    remoteOwnedSnapshotJitter_ = 0.01f;
     simulationTime_ = 0.f;
 }
 
@@ -324,20 +363,20 @@ bool GameSession::update(float dt, const TouchState &input) {
     return getWinner() != 0;
 }
 
-bool GameSession::updateBluetoothHost(float dt, const TouchState &localInput, const BluetoothInputState &remoteInput) {
+bool GameSession::updateBluetoothHost(float dt, const TouchState &localInput) {
     simulationTime_ += dt;
     if (playerFireCooldown_ > 0.f) playerFireCooldown_ -= dt;
     if (enemyFireCooldown_ > 0.f) enemyFireCooldown_ -= dt;
 
-    const TouchState blueInput = localControlsBlue_
-                                 ? makeHumanTouchStateForPlane(player_, localInput.upButtonHeld, localInput.downButtonHeld, localInput.fireTapped)
-                                 : makeHumanTouchStateForPlane(player_, remoteInput.upButtonHeld, remoteInput.downButtonHeld, remoteInput.fireTapped);
-    const TouchState redInput = localControlsBlue_
-                                ? makeHumanTouchStateForPlane(enemy_, remoteInput.upButtonHeld, remoteInput.downButtonHeld, remoteInput.fireTapped)
-                                : makeHumanTouchStateForPlane(enemy_, localInput.upButtonHeld, localInput.downButtonHeld, localInput.fireTapped);
+    const TouchState blueInput = makeHumanTouchStateForPlane(
+        player_,
+        localInput.upButtonHeld,
+        localInput.downButtonHeld,
+        localInput.fireTapped
+    );
 
     player_.update(dt, blueInput.upButtonHeld, blueInput.downButtonHeld);
-    enemy_.update(dt, redInput.upButtonHeld, redInput.downButtonHeld);
+    enemy_.update(dt, false, false);
 
     if (blueInput.fireTapped && playerFireCooldown_ <= 0.f
         && player_.isAlive && !player_.exploding && !player_.grounded) {
@@ -345,14 +384,23 @@ bool GameSession::updateBluetoothHost(float dt, const TouchState &localInput, co
         playerFireCooldown_ = FIRE_COOLDOWN;
     }
 
-    if (redInput.fireTapped && enemyFireCooldown_ <= 0.f
-        && enemy_.isAlive && !enemy_.exploding && !enemy_.grounded) {
-        enemyFire();
-        enemyFireCooldown_ = FIRE_COOLDOWN;
+    if (hasRemoteOwnedState_
+        && enemy_.isAlive
+        && !enemy_.exploding
+        && enemy_.respawnTimer <= 0.f) {
+        BluetoothMatchState bufferedRemoteState = remoteOwnedState_;
+        sampleRemoteOwnedSnapshot(bufferedRemoteState);
+        applyOwnedRemotePlaneState(
+            enemy_,
+            bufferedRemoteState.redPlane,
+            dt,
+            false,
+            CLIENT_PLANE_SMOOTHING
+        );
+        applyProjectiles(enemyBullets_, bufferedRemoteState.redProjectiles, dt, true);
     }
 
     playerBullets_.updateAll(dt);
-    enemyBullets_.updateAll(dt);
     background_.update(dt);
 
     checkCollisions();
@@ -363,7 +411,7 @@ bool GameSession::updateBluetoothHost(float dt, const TouchState &localInput, co
     return getWinner() != 0;
 }
 
-void GameSession::updateBluetoothClient(float dt, const TouchState &localInput, uint16_t localInputSequence) {
+void GameSession::updateBluetoothClient(float dt, const TouchState &localInput) {
     simulationTime_ += dt;
     background_.update(dt);
     clientClock_ += dt;
@@ -372,77 +420,131 @@ void GameSession::updateBluetoothClient(float dt, const TouchState &localInput, 
     if (playerFireCooldown_ > 0.f) playerFireCooldown_ -= dt;
     if (enemyFireCooldown_ > 0.f) enemyFireCooldown_ -= dt;
 
-    if (localControlsBlue_) {
-        const TouchState predictedInput = makeHumanTouchStateForPlane(
-            player_, localInput.upButtonHeld, localInput.downButtonHeld, localInput.fireTapped);
-        recordPredictedLocalInput(localInputSequence, dt, predictedInput);
-        player_.update(dt, predictedInput.upButtonHeld, predictedInput.downButtonHeld);
-        if (predictedInput.fireTapped && playerFireCooldown_ <= 0.f
-            && player_.isAlive && !player_.exploding && !player_.grounded) {
-            playerFire(localInputSequence);
-            playerFireCooldown_ = FIRE_COOLDOWN;
-        }
-        playerBullets_.updateAll(dt);
-    } else {
-        const TouchState predictedInput = makeHumanTouchStateForPlane(
-            enemy_, localInput.upButtonHeld, localInput.downButtonHeld, localInput.fireTapped);
-        recordPredictedLocalInput(localInputSequence, dt, predictedInput);
-        enemy_.update(dt, predictedInput.upButtonHeld, predictedInput.downButtonHeld);
-        if (predictedInput.fireTapped && enemyFireCooldown_ <= 0.f
-            && enemy_.isAlive && !enemy_.exploding && !enemy_.grounded) {
-            enemyFire(localInputSequence);
-            enemyFireCooldown_ = FIRE_COOLDOWN;
-        }
-        enemyBullets_.updateAll(dt);
+    const TouchState localOwnedInput = makeHumanTouchStateForPlane(
+        enemy_, localInput.upButtonHeld, localInput.downButtonHeld, localInput.fireTapped);
+    enemy_.update(dt, localOwnedInput.upButtonHeld, localOwnedInput.downButtonHeld);
+    if (localOwnedInput.fireTapped && enemyFireCooldown_ <= 0.f
+        && enemy_.isAlive && !enemy_.exploding && !enemy_.grounded) {
+        enemyFire();
+        enemyFireCooldown_ = FIRE_COOLDOWN;
     }
+    enemyBullets_.updateAll(dt);
 
     if (clientHasTargetState_) {
         BluetoothMatchState bufferedState = clientTargetState_;
         sampleBufferedSnapshot(bufferedState);
-        if (localControlsBlue_) {
-            applyPlaneState(
-                enemy_,
-                bufferedState.redPlane,
-                dt,
-                true,
-                CLIENT_PLANE_SMOOTHING
-            );
-            applyProjectiles(enemyBullets_, bufferedState.redProjectiles, dt, true);
-            reconcileLocalProjectiles(
-                playerBullets_,
-                clientTargetState_.blueProjectiles,
-                dt,
-                clientTargetState_.acknowledgedInputSequence,
-                player_
-            );
+        applyPlaneState(
+            player_,
+            bufferedState.bluePlane,
+            dt,
+            true,
+            CLIENT_PLANE_SMOOTHING
+        );
+        applyProjectiles(playerBullets_, bufferedState.blueProjectiles, dt, true);
+        if (planeHasAuthoritativeEventChange(enemy_, clientTargetState_.redPlane)) {
+            applyPlaneState(enemy_, clientTargetState_.redPlane, 0.f, false, CLIENT_PLANE_SMOOTHING);
+            applyProjectiles(enemyBullets_, clientTargetState_.redProjectiles, 0.f, false);
         } else {
-            applyPlaneState(
-                player_,
-                bufferedState.bluePlane,
-                dt,
-                true,
-                CLIENT_PLANE_SMOOTHING
-            );
-            applyProjectiles(playerBullets_, bufferedState.blueProjectiles, dt, true);
-            reconcileLocalProjectiles(
-                enemyBullets_,
-                clientTargetState_.redProjectiles,
-                dt,
-                clientTargetState_.acknowledgedInputSequence,
-                enemy_
-            );
+            applyAuthoritativePlaneFields(enemy_, clientTargetState_.redPlane);
         }
         hud_.setScores(player_.score, enemy_.score);
     }
     predictBluetoothClientEffects();
-    if (localControlsBlue_) {
-        applyLocalPlaneRenderSmoothing(player_, dt);
-    } else {
-        applyLocalPlaneRenderSmoothing(enemy_, dt);
-    }
     hud_.update(dt);
     player_.damageEffectTimer += dt;
     enemy_.damageEffectTimer += dt;
+}
+
+bool GameSession::updateBluetoothRollback(float dt, const BluetoothInputState &localInput) {
+    processBluetoothRollbackCorrections();
+
+    BluetoothInputState remoteInput{};
+    const bool remoteConfirmed = consumeQueuedRemoteInput(localInput.sequence, remoteInput);
+    if (remoteConfirmed) {
+        predictedRemoteInputAge_ = 0;
+    } else {
+        remoteInput = hasLastPredictedRemoteInput_ ? lastPredictedRemoteInput_ : BluetoothInputState{};
+        remoteInput.sequence = localInput.sequence;
+        remoteInput.fireTapped = false;
+        if (predictedRemoteInputAge_ >= REMOTE_PREDICTION_HOLD_FRAMES) {
+            remoteInput.upButtonHeld = false;
+            remoteInput.downButtonHeld = false;
+        }
+        predictedRemoteInputAge_ = static_cast<uint8_t>(std::min<int>(predictedRemoteInputAge_ + 1, 255));
+    }
+
+    rollbackFrames_.push_back(RollbackFrame{
+        localInput.sequence,
+        dt,
+        captureSimulationSnapshot(),
+        localInput,
+        remoteInput,
+        remoteConfirmed
+    });
+
+    simulateBluetoothRollbackFrame(dt, localInput, remoteInput, true);
+
+    lastPredictedRemoteInput_.upButtonHeld = remoteInput.upButtonHeld;
+    lastPredictedRemoteInput_.downButtonHeld = remoteInput.downButtonHeld;
+    lastPredictedRemoteInput_.fireTapped = false;
+    lastPredictedRemoteInput_.sequence = localInput.sequence;
+    hasLastPredictedRemoteInput_ = true;
+
+    trimRollbackHistory();
+    background_.update(dt);
+    hud_.setScores(player_.score, enemy_.score);
+    hud_.update(dt);
+    return getWinner() != 0;
+}
+
+void GameSession::queueBluetoothRemoteInput(const BluetoothInputState &input) {
+    for (auto &frame : rollbackFrames_) {
+        if (frame.sequence != input.sequence) {
+            continue;
+        }
+
+        BluetoothInputState resolved = input;
+        resolved.fireTapped = frame.remoteInput.fireTapped || input.fireTapped;
+        const bool changed = !bluetoothInputsEqual(frame.remoteInput, resolved);
+        frame.remoteInput = resolved;
+        frame.remoteConfirmed = true;
+
+        if (changed) {
+            if (!hasPendingRollbackCorrection_
+                || isSequenceNewer(pendingRollbackSequence_, input.sequence)) {
+                pendingRollbackSequence_ = input.sequence;
+                hasPendingRollbackCorrection_ = true;
+            }
+        }
+        return;
+    }
+
+    for (auto it = pendingRemoteInputs_.begin(); it != pendingRemoteInputs_.end(); ++it) {
+        if (it->sequence == input.sequence) {
+            it->upButtonHeld = input.upButtonHeld;
+            it->downButtonHeld = input.downButtonHeld;
+            it->fireTapped = it->fireTapped || input.fireTapped;
+            return;
+        }
+        if (isSequenceNewer(it->sequence, input.sequence)) {
+            pendingRemoteInputs_.insert(it, input);
+            return;
+        }
+    }
+
+    pendingRemoteInputs_.push_back(input);
+    while (pendingRemoteInputs_.size() > ROLLBACK_HISTORY_LIMIT) {
+        pendingRemoteInputs_.pop_front();
+    }
+}
+
+void GameSession::processBluetoothRollbackCorrections() {
+    if (!hasPendingRollbackCorrection_) {
+        return;
+    }
+
+    rebuildRollbackFrom(pendingRollbackSequence_);
+    hasPendingRollbackCorrection_ = false;
 }
 
 void GameSession::draw(const Shader &shader) const {
@@ -495,6 +597,16 @@ void GameSession::reset() {
     playerFireCooldown_ = 0.f;
     enemyFireCooldown_ = 0.f;
     hud_.setScores(player_.score, enemy_.score);
+    rollbackFrames_.clear();
+    pendingRemoteInputs_.clear();
+    lastPredictedRemoteInput_ = {};
+    hasLastPredictedRemoteInput_ = false;
+    predictedRemoteInputAge_ = 0;
+    hasPendingRollbackCorrection_ = false;
+    pendingRollbackSequence_ = 0;
+    hasRemoteOwnedState_ = false;
+    remoteOwnedState_ = {};
+    remoteOwnedSnapshotBuffer_.clear();
     clientHasTargetState_ = false;
     clientStateInitialized_ = false;
     pendingLocalInputs_.clear();
@@ -503,9 +615,13 @@ void GameSession::reset() {
     clientClock_ = 0.f;
     hostToLocalClockOffset_ = 0.f;
     hasHostClockOffset_ = false;
+    remoteOwnedClockOffset_ = 0.f;
+    hasRemoteOwnedClockOffset_ = false;
     smoothedRtt_ = 0.08f;
     smoothedSnapshotInterval_ = 1.f / 60.f;
     snapshotJitter_ = 0.01f;
+    remoteOwnedSnapshotInterval_ = 1.f / 60.f;
+    remoteOwnedSnapshotJitter_ = 0.01f;
     simulationTime_ = 0.f;
 }
 
@@ -526,9 +642,11 @@ void GameSession::applyBluetoothMatchState(const BluetoothMatchState &state) {
     pushBufferedSnapshot(state);
     if (!clientStateInitialized_) {
         applyPlaneState(player_, state.bluePlane, 0.f, false, CLIENT_PLANE_SMOOTHING);
-        applyPlaneState(enemy_, state.redPlane, 0.f, false, CLIENT_PLANE_SMOOTHING);
         applyProjectiles(playerBullets_, state.blueProjectiles, 0.f, false);
-        applyProjectiles(enemyBullets_, state.redProjectiles, 0.f, false);
+        if (!localControlsBlue_) {
+            applyPlaneState(enemy_, state.redPlane, 0.f, false, CLIENT_PLANE_SMOOTHING);
+            applyProjectiles(enemyBullets_, state.redProjectiles, 0.f, false);
+        }
         hud_.setScores(player_.score, enemy_.score);
         clientStateInitialized_ = true;
         pendingLocalInputs_.clear();
@@ -536,13 +654,12 @@ void GameSession::applyBluetoothMatchState(const BluetoothMatchState &state) {
         return;
     }
 
-    if (localControlsBlue_) {
-        reconcilePredictedLocalPlane(player_, state.bluePlane, state.acknowledgedInputSequence);
-        applyLocalPlaneRenderSmoothing(player_, 0.f);
-    } else {
-        reconcilePredictedLocalPlane(enemy_, state.redPlane, state.acknowledgedInputSequence);
-        applyLocalPlaneRenderSmoothing(enemy_, 0.f);
-    }
+}
+
+void GameSession::applyBluetoothRemoteOwnedState(const BluetoothMatchState &state) {
+    remoteOwnedState_ = state;
+    hasRemoteOwnedState_ = true;
+    pushRemoteOwnedSnapshot(state);
 }
 
 TouchState GameSession::makePlaneTouchState(bool upHeld, bool downHeld, bool fireTapped) {
@@ -558,6 +675,246 @@ TouchState GameSession::makeHumanTouchStateForPlane(const Plane &plane, bool upH
         return makePlaneTouchState(upHeld, downHeld, fireTapped);
     }
     return makePlaneTouchState(downHeld, upHeld, fireTapped);
+}
+
+void GameSession::simulateBluetoothRollbackFrame(
+    float dt,
+    const BluetoothInputState &localInput,
+    const BluetoothInputState &remoteInput,
+    bool emitAudio
+) {
+    simulationTime_ += dt;
+    if (playerFireCooldown_ > 0.f) playerFireCooldown_ -= dt;
+    if (enemyFireCooldown_ > 0.f) enemyFireCooldown_ -= dt;
+
+    const BluetoothInputState &blueRawInput = localControlsBlue_ ? localInput : remoteInput;
+    const BluetoothInputState &redRawInput = localControlsBlue_ ? remoteInput : localInput;
+    const TouchState blueInput = makeHumanTouchStateForPlane(
+        player_,
+        blueRawInput.upButtonHeld,
+        blueRawInput.downButtonHeld,
+        blueRawInput.fireTapped
+    );
+    const TouchState redInput = makeHumanTouchStateForPlane(
+        enemy_,
+        redRawInput.upButtonHeld,
+        redRawInput.downButtonHeld,
+        redRawInput.fireTapped
+    );
+
+    player_.update(dt, blueInput.upButtonHeld, blueInput.downButtonHeld);
+    enemy_.update(dt, redInput.upButtonHeld, redInput.downButtonHeld);
+
+    if (blueInput.fireTapped && playerFireCooldown_ <= 0.f
+        && player_.isAlive && !player_.exploding && !player_.grounded) {
+        playerFire(blueRawInput.sequence, emitAudio);
+        playerFireCooldown_ = FIRE_COOLDOWN;
+    }
+
+    if (redInput.fireTapped && enemyFireCooldown_ <= 0.f
+        && enemy_.isAlive && !enemy_.exploding && !enemy_.grounded) {
+        enemyFire(redRawInput.sequence, emitAudio);
+        enemyFireCooldown_ = FIRE_COOLDOWN;
+    }
+
+    playerBullets_.updateAll(dt);
+    enemyBullets_.updateAll(dt);
+    checkCollisions(emitAudio);
+}
+
+GameSession::SimulationSnapshot GameSession::captureSimulationSnapshot() const {
+    SimulationSnapshot snapshot;
+    snapshot.playerFireCooldown = playerFireCooldown_;
+    snapshot.enemyFireCooldown = enemyFireCooldown_;
+    snapshot.simulationTime = simulationTime_;
+
+    snapshot.bluePlane.x = player_.x;
+    snapshot.bluePlane.y = player_.y;
+    snapshot.bluePlane.angle = player_.angle;
+    snapshot.bluePlane.groundSpeed = player_.groundSpeed;
+    snapshot.bluePlane.respawnTimer = player_.respawnTimer;
+    snapshot.bluePlane.explosionTimer = player_.explosionTimer;
+    snapshot.bluePlane.damageEffectTimer = player_.damageEffectTimer;
+    snapshot.bluePlane.predictedExplosionTimer = player_.predictedExplosionTimer;
+    snapshot.bluePlane.impactEffectTimer = player_.impactEffectTimer;
+    snapshot.bluePlane.impactEffectX = player_.impactEffectX;
+    snapshot.bluePlane.impactEffectY = player_.impactEffectY;
+    snapshot.bluePlane.hp = player_.hp;
+    snapshot.bluePlane.score = player_.score;
+    snapshot.bluePlane.isAlive = player_.isAlive;
+    snapshot.bluePlane.grounded = player_.grounded;
+    snapshot.bluePlane.exploding = player_.exploding;
+
+    snapshot.redPlane.x = enemy_.x;
+    snapshot.redPlane.y = enemy_.y;
+    snapshot.redPlane.angle = enemy_.angle;
+    snapshot.redPlane.groundSpeed = enemy_.groundSpeed;
+    snapshot.redPlane.respawnTimer = enemy_.respawnTimer;
+    snapshot.redPlane.explosionTimer = enemy_.explosionTimer;
+    snapshot.redPlane.damageEffectTimer = enemy_.damageEffectTimer;
+    snapshot.redPlane.predictedExplosionTimer = enemy_.predictedExplosionTimer;
+    snapshot.redPlane.impactEffectTimer = enemy_.impactEffectTimer;
+    snapshot.redPlane.impactEffectX = enemy_.impactEffectX;
+    snapshot.redPlane.impactEffectY = enemy_.impactEffectY;
+    snapshot.redPlane.hp = enemy_.hp;
+    snapshot.redPlane.score = enemy_.score;
+    snapshot.redPlane.isAlive = enemy_.isAlive;
+    snapshot.redPlane.grounded = enemy_.grounded;
+    snapshot.redPlane.exploding = enemy_.exploding;
+
+    const auto &blueProjectiles = playerBullets_.getProjectiles();
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        snapshot.blueProjectiles[i].x = blueProjectiles[i].x;
+        snapshot.blueProjectiles[i].y = blueProjectiles[i].y;
+        snapshot.blueProjectiles[i].velX = blueProjectiles[i].velX;
+        snapshot.blueProjectiles[i].velY = blueProjectiles[i].velY;
+        snapshot.blueProjectiles[i].lifetime = blueProjectiles[i].lifetime;
+        snapshot.blueProjectiles[i].spawnedByInputSequence = blueProjectiles[i].spawnedByInputSequence;
+        snapshot.blueProjectiles[i].active = blueProjectiles[i].active;
+    }
+
+    const auto &redProjectiles = enemyBullets_.getProjectiles();
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        snapshot.redProjectiles[i].x = redProjectiles[i].x;
+        snapshot.redProjectiles[i].y = redProjectiles[i].y;
+        snapshot.redProjectiles[i].velX = redProjectiles[i].velX;
+        snapshot.redProjectiles[i].velY = redProjectiles[i].velY;
+        snapshot.redProjectiles[i].lifetime = redProjectiles[i].lifetime;
+        snapshot.redProjectiles[i].spawnedByInputSequence = redProjectiles[i].spawnedByInputSequence;
+        snapshot.redProjectiles[i].active = redProjectiles[i].active;
+    }
+
+    return snapshot;
+}
+
+void GameSession::restoreSimulationSnapshot(const SimulationSnapshot &snapshot) {
+    playerFireCooldown_ = snapshot.playerFireCooldown;
+    enemyFireCooldown_ = snapshot.enemyFireCooldown;
+    simulationTime_ = snapshot.simulationTime;
+
+    player_.x = snapshot.bluePlane.x;
+    player_.y = snapshot.bluePlane.y;
+    player_.angle = snapshot.bluePlane.angle;
+    player_.groundSpeed = snapshot.bluePlane.groundSpeed;
+    player_.respawnTimer = snapshot.bluePlane.respawnTimer;
+    player_.explosionTimer = snapshot.bluePlane.explosionTimer;
+    player_.damageEffectTimer = snapshot.bluePlane.damageEffectTimer;
+    player_.predictedExplosionTimer = snapshot.bluePlane.predictedExplosionTimer;
+    player_.impactEffectTimer = snapshot.bluePlane.impactEffectTimer;
+    player_.impactEffectX = snapshot.bluePlane.impactEffectX;
+    player_.impactEffectY = snapshot.bluePlane.impactEffectY;
+    player_.hp = snapshot.bluePlane.hp;
+    player_.score = snapshot.bluePlane.score;
+    player_.isAlive = snapshot.bluePlane.isAlive;
+    player_.grounded = snapshot.bluePlane.grounded;
+    player_.exploding = snapshot.bluePlane.exploding;
+    syncPlaneSprite(player_);
+
+    enemy_.x = snapshot.redPlane.x;
+    enemy_.y = snapshot.redPlane.y;
+    enemy_.angle = snapshot.redPlane.angle;
+    enemy_.groundSpeed = snapshot.redPlane.groundSpeed;
+    enemy_.respawnTimer = snapshot.redPlane.respawnTimer;
+    enemy_.explosionTimer = snapshot.redPlane.explosionTimer;
+    enemy_.damageEffectTimer = snapshot.redPlane.damageEffectTimer;
+    enemy_.predictedExplosionTimer = snapshot.redPlane.predictedExplosionTimer;
+    enemy_.impactEffectTimer = snapshot.redPlane.impactEffectTimer;
+    enemy_.impactEffectX = snapshot.redPlane.impactEffectX;
+    enemy_.impactEffectY = snapshot.redPlane.impactEffectY;
+    enemy_.hp = snapshot.redPlane.hp;
+    enemy_.score = snapshot.redPlane.score;
+    enemy_.isAlive = snapshot.redPlane.isAlive;
+    enemy_.grounded = snapshot.redPlane.grounded;
+    enemy_.exploding = snapshot.redPlane.exploding;
+    syncPlaneSprite(enemy_);
+
+    auto &blueProjectiles = playerBullets_.getProjectiles();
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        blueProjectiles[i].x = snapshot.blueProjectiles[i].x;
+        blueProjectiles[i].y = snapshot.blueProjectiles[i].y;
+        blueProjectiles[i].velX = snapshot.blueProjectiles[i].velX;
+        blueProjectiles[i].velY = snapshot.blueProjectiles[i].velY;
+        blueProjectiles[i].lifetime = snapshot.blueProjectiles[i].lifetime;
+        blueProjectiles[i].spawnedByInputSequence = snapshot.blueProjectiles[i].spawnedByInputSequence;
+        blueProjectiles[i].active = snapshot.blueProjectiles[i].active;
+        blueProjectiles[i].sprite.visible = snapshot.blueProjectiles[i].active;
+        blueProjectiles[i].sprite.x = snapshot.blueProjectiles[i].x;
+        blueProjectiles[i].sprite.y = snapshot.blueProjectiles[i].y;
+    }
+
+    auto &redProjectiles = enemyBullets_.getProjectiles();
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        redProjectiles[i].x = snapshot.redProjectiles[i].x;
+        redProjectiles[i].y = snapshot.redProjectiles[i].y;
+        redProjectiles[i].velX = snapshot.redProjectiles[i].velX;
+        redProjectiles[i].velY = snapshot.redProjectiles[i].velY;
+        redProjectiles[i].lifetime = snapshot.redProjectiles[i].lifetime;
+        redProjectiles[i].spawnedByInputSequence = snapshot.redProjectiles[i].spawnedByInputSequence;
+        redProjectiles[i].active = snapshot.redProjectiles[i].active;
+        redProjectiles[i].sprite.visible = snapshot.redProjectiles[i].active;
+        redProjectiles[i].sprite.x = snapshot.redProjectiles[i].x;
+        redProjectiles[i].sprite.y = snapshot.redProjectiles[i].y;
+    }
+
+    hud_.setScores(player_.score, enemy_.score);
+}
+
+bool GameSession::consumeQueuedRemoteInput(uint16_t sequence, BluetoothInputState &outInput) {
+    for (auto it = pendingRemoteInputs_.begin(); it != pendingRemoteInputs_.end(); ++it) {
+        if (it->sequence == sequence) {
+            outInput = *it;
+            pendingRemoteInputs_.erase(it);
+            return true;
+        }
+        if (isSequenceNewer(it->sequence, sequence)) {
+            break;
+        }
+    }
+    return false;
+}
+
+void GameSession::rebuildRollbackFrom(uint16_t sequence) {
+    auto rollbackStart = rollbackFrames_.end();
+    for (auto it = rollbackFrames_.begin(); it != rollbackFrames_.end(); ++it) {
+        if (it->sequence == sequence) {
+            rollbackStart = it;
+            break;
+        }
+    }
+    if (rollbackStart == rollbackFrames_.end()) {
+        return;
+    }
+
+    restoreSimulationSnapshot(rollbackStart->snapshot);
+    for (auto it = rollbackStart; it != rollbackFrames_.end(); ++it) {
+        it->snapshot = captureSimulationSnapshot();
+        simulateBluetoothRollbackFrame(it->dt, it->localInput, it->remoteInput, false);
+    }
+
+    if (!rollbackFrames_.empty()) {
+        lastPredictedRemoteInput_ = rollbackFrames_.back().remoteInput;
+        lastPredictedRemoteInput_.fireTapped = false;
+        hasLastPredictedRemoteInput_ = true;
+        predictedRemoteInputAge_ = 0;
+        for (auto it = rollbackFrames_.rbegin(); it != rollbackFrames_.rend(); ++it) {
+            if (it->remoteConfirmed) {
+                break;
+            }
+            predictedRemoteInputAge_ = static_cast<uint8_t>(std::min<int>(predictedRemoteInputAge_ + 1, 255));
+        }
+    } else {
+        lastPredictedRemoteInput_ = {};
+        hasLastPredictedRemoteInput_ = false;
+        predictedRemoteInputAge_ = 0;
+    }
+
+    hud_.setScores(player_.score, enemy_.score);
+}
+
+void GameSession::trimRollbackHistory() {
+    while (rollbackFrames_.size() > ROLLBACK_HISTORY_LIMIT) {
+        rollbackFrames_.pop_front();
+    }
 }
 
 void GameSession::applyPlaneState(Plane &plane, const BluetoothPlaneState &state, float dt, bool smooth, float smoothingSpeed) {
@@ -584,6 +941,51 @@ void GameSession::applyPlaneState(Plane &plane, const BluetoothPlaneState &state
     plane.score = state.score;
     plane.isAlive = state.isAlive;
     plane.grounded = state.grounded;
+    plane.exploding = state.exploding;
+    if (plane.exploding) {
+        plane.predictedExplosionTimer = 0.f;
+        plane.impactEffectTimer = 0.f;
+    }
+    syncPlaneSprite(plane);
+}
+
+void GameSession::applyOwnedRemotePlaneState(
+    Plane &plane,
+    const BluetoothPlaneState &state,
+    float dt,
+    bool smooth,
+    float smoothingSpeed
+) {
+    const float worldHalfW = worldHalfWidthForAspect(aspect_);
+    const bool shouldSnap = plane.grounded != state.grounded
+                            || fabsf(shortestWrappedDx(plane.x, state.x, worldHalfW)) > 1.6f
+                            || fabsf(plane.y - state.y) > 0.8f;
+    if (!smooth || shouldSnap) {
+        plane.x = state.x;
+        plane.y = state.y;
+        plane.angle = state.angle;
+        plane.groundSpeed = state.groundSpeed;
+    } else {
+        const float alpha = smoothingAlpha(smoothingSpeed, dt);
+        plane.x = Utility::wrapWorldX(
+            plane.x + shortestWrappedDx(plane.x, state.x, worldHalfW) * alpha,
+            worldHalfW,
+            PLANE_HALF_W
+        );
+        plane.y += (state.y - plane.y) * alpha;
+        plane.angle = normalizeAngle(plane.angle + shortestAngleDelta(plane.angle, state.angle) * alpha);
+        plane.groundSpeed += (state.groundSpeed - plane.groundSpeed) * alpha;
+    }
+    plane.grounded = state.grounded;
+    syncPlaneSprite(plane);
+}
+
+void GameSession::applyAuthoritativePlaneFields(Plane &plane, const BluetoothPlaneState &state) {
+    plane.respawnTimer = state.respawnTimer;
+    plane.explosionTimer = state.explosionTimer;
+    plane.hp = state.hp;
+    plane.score = state.score;
+    plane.isAlive = state.isAlive;
     plane.exploding = state.exploding;
     if (plane.exploding) {
         plane.predictedExplosionTimer = 0.f;
@@ -657,62 +1059,67 @@ void GameSession::reconcilePredictedLocalPlane(
     }
 
     const float preservedDamageEffectTimer = plane.damageEffectTimer;
-    applyPlaneState(plane, state, 0.f, false, CLIENT_PLANE_SMOOTHING);
+    Plane reconciledPlane = plane;
+    applyPlaneState(reconciledPlane, state, 0.f, false, CLIENT_PLANE_SMOOTHING);
     for (const auto &inputFrame : pendingLocalInputs_) {
-        plane.update(inputFrame.dt, inputFrame.upButtonHeld, inputFrame.downButtonHeld);
+        reconciledPlane.update(inputFrame.dt, inputFrame.upButtonHeld, inputFrame.downButtonHeld);
     }
-    plane.damageEffectTimer = preservedDamageEffectTimer;
+    reconciledPlane.damageEffectTimer = preservedDamageEffectTimer;
 
-    if (shouldSmoothCorrection) {
-        const float dx = fabsf(shortestWrappedDx(previousX, plane.x, worldHalfW));
-        const float dy = fabsf(plane.y - previousY);
-        const float da = fabsf(shortestAngleDelta(previousAngle, plane.angle));
-        if (dx <= CLIENT_LOCAL_SOFT_RECONCILE_MAX_X
-            && dy <= CLIENT_LOCAL_SOFT_RECONCILE_MAX_Y
-            && da <= CLIENT_LOCAL_SOFT_RECONCILE_MAX_ANGLE) {
-            const float normalizedMagnitude = std::max({
-                dx / CLIENT_LOCAL_SOFT_RECONCILE_MAX_X,
-                dy / CLIENT_LOCAL_SOFT_RECONCILE_MAX_Y,
-                da / CLIENT_LOCAL_SOFT_RECONCILE_MAX_ANGLE
-            });
-            const float correctionAlpha = lerpFloat(
-                CLIENT_LOCAL_SOFT_RECONCILE_MIN_ALPHA,
-                CLIENT_LOCAL_SOFT_RECONCILE_MAX_ALPHA,
-                normalizedMagnitude
-            );
-            plane.x = Utility::wrapWorldX(
-                previousX + shortestWrappedDx(previousX, plane.x, worldHalfW) * correctionAlpha,
-                worldHalfW,
-                PLANE_HALF_W
-            );
-            plane.y = previousY + (plane.y - previousY) * correctionAlpha;
-            plane.angle = normalizeAngle(
-                previousAngle + shortestAngleDelta(previousAngle, plane.angle) * correctionAlpha
-            );
-            plane.groundSpeed = previousGroundSpeed + (plane.groundSpeed - previousGroundSpeed) * correctionAlpha;
-        }
-    }
-
-    if (shouldSmoothCorrection) {
-        localPlaneRenderSmoothing_.xError = std::clamp(
-            localPlaneRenderSmoothing_.xError + shortestWrappedDx(plane.x, previousX, worldHalfW),
-            -CLIENT_LOCAL_RENDER_ERROR_MAX_X,
-            CLIENT_LOCAL_RENDER_ERROR_MAX_X
-        );
-        localPlaneRenderSmoothing_.yError = std::clamp(
-            localPlaneRenderSmoothing_.yError + (previousY - plane.y),
-            -CLIENT_LOCAL_RENDER_ERROR_MAX_Y,
-            CLIENT_LOCAL_RENDER_ERROR_MAX_Y
-        );
-        localPlaneRenderSmoothing_.angleError = std::clamp(
-            normalizeAngle(localPlaneRenderSmoothing_.angleError + shortestAngleDelta(plane.angle, previousAngle)),
-            -CLIENT_LOCAL_RENDER_ERROR_MAX_ANGLE,
-            CLIENT_LOCAL_RENDER_ERROR_MAX_ANGLE
-        );
-    } else {
+    if (!shouldSmoothCorrection) {
+        plane = reconciledPlane;
         localPlaneRenderSmoothing_ = {};
+        syncPlaneSprite(plane);
+        return;
     }
 
+    const float dx = fabsf(shortestWrappedDx(previousX, reconciledPlane.x, worldHalfW));
+    const float dy = fabsf(reconciledPlane.y - previousY);
+    const float da = fabsf(shortestAngleDelta(previousAngle, reconciledPlane.angle));
+    if (dx <= CLIENT_LOCAL_RECONCILE_DEAD_ZONE_X
+        && dy <= CLIENT_LOCAL_RECONCILE_DEAD_ZONE_Y
+        && da <= CLIENT_LOCAL_RECONCILE_DEAD_ZONE_ANGLE) {
+        localPlaneRenderSmoothing_ = {};
+        syncPlaneSprite(plane);
+        return;
+    }
+
+    float correctionAlpha = CLIENT_LOCAL_RECONCILE_LARGE_ALPHA;
+    if (dx <= CLIENT_LOCAL_SOFT_RECONCILE_MAX_X
+        && dy <= CLIENT_LOCAL_SOFT_RECONCILE_MAX_Y
+        && da <= CLIENT_LOCAL_SOFT_RECONCILE_MAX_ANGLE) {
+        const float normalizedMagnitude = std::max({
+            dx / CLIENT_LOCAL_SOFT_RECONCILE_MAX_X,
+            dy / CLIENT_LOCAL_SOFT_RECONCILE_MAX_Y,
+            da / CLIENT_LOCAL_SOFT_RECONCILE_MAX_ANGLE
+        });
+        correctionAlpha = lerpFloat(
+            CLIENT_LOCAL_SOFT_RECONCILE_MIN_ALPHA,
+            CLIENT_LOCAL_SOFT_RECONCILE_MAX_ALPHA,
+            normalizedMagnitude
+        );
+    }
+
+    plane.x = Utility::wrapWorldX(
+        previousX + shortestWrappedDx(previousX, reconciledPlane.x, worldHalfW) * correctionAlpha,
+        worldHalfW,
+        PLANE_HALF_W
+    );
+    plane.y = previousY + (reconciledPlane.y - previousY) * correctionAlpha;
+    plane.angle = normalizeAngle(
+        previousAngle + shortestAngleDelta(previousAngle, reconciledPlane.angle) * correctionAlpha
+    );
+    plane.groundSpeed = previousGroundSpeed
+                        + (reconciledPlane.groundSpeed - previousGroundSpeed) * correctionAlpha;
+    plane.respawnTimer = reconciledPlane.respawnTimer;
+    plane.explosionTimer = reconciledPlane.explosionTimer;
+    plane.hp = reconciledPlane.hp;
+    plane.score = reconciledPlane.score;
+    plane.isAlive = reconciledPlane.isAlive;
+    plane.grounded = reconciledPlane.grounded;
+    plane.exploding = reconciledPlane.exploding;
+    plane.damageEffectTimer = preservedDamageEffectTimer;
+    localPlaneRenderSmoothing_ = {};
     syncPlaneSprite(plane);
 }
 
@@ -804,6 +1211,12 @@ float GameSession::currentInterpolationDelay() const {
     return std::clamp(delay, CLIENT_SNAPSHOT_BUFFER_MIN, CLIENT_SNAPSHOT_BUFFER_MAX);
 }
 
+float GameSession::currentRemoteOwnedInterpolationDelay() const {
+    const float delay = remoteOwnedSnapshotInterval_ * 0.35f
+                        + remoteOwnedSnapshotJitter_ * 0.15f;
+    return std::clamp(delay, REMOTE_OWNED_SNAPSHOT_BUFFER_MIN, REMOTE_OWNED_SNAPSHOT_BUFFER_MAX);
+}
+
 bool GameSession::sampleBufferedSnapshot(BluetoothMatchState &outState) const {
     if (snapshotBuffer_.empty()) {
         return false;
@@ -867,6 +1280,109 @@ bool GameSession::sampleBufferedSnapshot(BluetoothMatchState &outState) const {
         alpha,
         worldHalfW
     );
+    outState.redProjectiles = interpolateProjectileState(
+        older->state.redProjectiles,
+        newer->state.redProjectiles,
+        alpha,
+        worldHalfW
+    );
+    return true;
+}
+
+void GameSession::pushRemoteOwnedSnapshot(const BluetoothMatchState &state) {
+    const float offsetSample = std::max(0.f, simulationTime_ - state.hostTimestamp);
+    if (!hasRemoteOwnedClockOffset_) {
+        remoteOwnedClockOffset_ = offsetSample;
+        hasRemoteOwnedClockOffset_ = true;
+    } else if (offsetSample < remoteOwnedClockOffset_) {
+        remoteOwnedClockOffset_ = lerpFloat(remoteOwnedClockOffset_, offsetSample, 0.35f);
+    } else {
+        remoteOwnedClockOffset_ = lerpFloat(remoteOwnedClockOffset_, offsetSample, 0.08f);
+    }
+
+    if (!remoteOwnedSnapshotBuffer_.empty()
+        && state.hostTimestamp <= remoteOwnedSnapshotBuffer_.back().state.hostTimestamp) {
+        remoteOwnedSnapshotBuffer_.back() = BufferedMatchSnapshot{state, simulationTime_};
+        return;
+    }
+
+    if (!remoteOwnedSnapshotBuffer_.empty()) {
+        const float remoteInterval = std::max(
+            0.0001f,
+            state.hostTimestamp - remoteOwnedSnapshotBuffer_.back().state.hostTimestamp
+        );
+        const float arrivalInterval = std::max(
+            0.f,
+            simulationTime_ - remoteOwnedSnapshotBuffer_.back().receivedAt
+        );
+        remoteOwnedSnapshotInterval_ = lerpFloat(remoteOwnedSnapshotInterval_, remoteInterval, 0.18f);
+        remoteOwnedSnapshotJitter_ = lerpFloat(
+            remoteOwnedSnapshotJitter_,
+            fabsf(arrivalInterval - remoteInterval),
+            0.18f
+        );
+    }
+
+    remoteOwnedSnapshotBuffer_.push_back(BufferedMatchSnapshot{state, simulationTime_});
+    while (remoteOwnedSnapshotBuffer_.size() > CLIENT_SNAPSHOT_HISTORY_LIMIT) {
+        remoteOwnedSnapshotBuffer_.pop_front();
+    }
+}
+
+bool GameSession::sampleRemoteOwnedSnapshot(BluetoothMatchState &outState) const {
+    if (remoteOwnedSnapshotBuffer_.empty()) {
+        return false;
+    }
+
+    if (remoteOwnedSnapshotBuffer_.size() == 1) {
+        outState = remoteOwnedSnapshotBuffer_.front().state;
+        const float worldHalfW = worldHalfWidthForAspect(aspect_);
+        const float estimatedRemoteNow = hasRemoteOwnedClockOffset_
+                                         ? (simulationTime_ - remoteOwnedClockOffset_)
+                                         : remoteOwnedSnapshotBuffer_.front().state.hostTimestamp;
+        const float extrapolationDt = std::min(
+            std::max(0.f, estimatedRemoteNow - remoteOwnedSnapshotBuffer_.front().state.hostTimestamp),
+            REMOTE_OWNED_EXTRAPOLATION_MAX
+        );
+        outState.redPlane = extrapolatePlaneState(outState.redPlane, extrapolationDt, worldHalfW);
+        return true;
+    }
+
+    const float estimatedRemoteNow = hasRemoteOwnedClockOffset_
+                                     ? (simulationTime_ - remoteOwnedClockOffset_)
+                                     : remoteOwnedSnapshotBuffer_.back().state.hostTimestamp;
+    const float renderTime = estimatedRemoteNow - currentRemoteOwnedInterpolationDelay();
+    const float worldHalfW = worldHalfWidthForAspect(aspect_);
+    const BufferedMatchSnapshot *older = &remoteOwnedSnapshotBuffer_.front();
+    const BufferedMatchSnapshot *newer = &remoteOwnedSnapshotBuffer_.back();
+
+    for (size_t i = 1; i < remoteOwnedSnapshotBuffer_.size(); ++i) {
+        if (remoteOwnedSnapshotBuffer_[i].state.hostTimestamp >= renderTime) {
+            older = &remoteOwnedSnapshotBuffer_[i - 1];
+            newer = &remoteOwnedSnapshotBuffer_[i];
+            break;
+        }
+    }
+
+    if (renderTime >= remoteOwnedSnapshotBuffer_.back().state.hostTimestamp) {
+        outState = remoteOwnedSnapshotBuffer_.back().state;
+        const float extrapolationDt = std::min(
+            renderTime - remoteOwnedSnapshotBuffer_.back().state.hostTimestamp,
+            REMOTE_OWNED_EXTRAPOLATION_MAX
+        );
+        outState.redPlane = extrapolatePlaneState(outState.redPlane, extrapolationDt, worldHalfW);
+        return true;
+    }
+
+    if (renderTime <= remoteOwnedSnapshotBuffer_.front().state.hostTimestamp) {
+        outState = remoteOwnedSnapshotBuffer_.front().state;
+        return true;
+    }
+
+    const float span = std::max(0.0001f, newer->state.hostTimestamp - older->state.hostTimestamp);
+    const float alpha = std::clamp((renderTime - older->state.hostTimestamp) / span, 0.f, 1.f);
+    outState = newer->state;
+    outState.redPlane = interpolatePlaneState(older->state.redPlane, newer->state.redPlane, alpha, worldHalfW);
     outState.redProjectiles = interpolateProjectileState(
         older->state.redProjectiles,
         newer->state.redProjectiles,
@@ -984,7 +1500,7 @@ void GameSession::reconcileLocalProjectiles(
     }
 }
 
-void GameSession::checkCollisions() {
+void GameSession::checkCollisions(bool emitAudio) {
     if (enemy_.isAlive && !enemy_.exploding && !enemy_.isInvulnerable()) {
         for (auto &p : playerBullets_.getProjectiles()) {
             if (!p.active) continue;
@@ -994,9 +1510,13 @@ void GameSession::checkCollisions() {
                 p.sprite.visible = false;
                 if (enemy_.hitPlane()) {
                     player_.score++;
-                    sound_.playExplosion();
+                    if (emitAudio) {
+                        sound_.playExplosion();
+                    }
                 } else {
-                    sound_.playHit();
+                    if (emitAudio) {
+                        sound_.playHit();
+                    }
                 }
                 break;
             }
@@ -1012,9 +1532,13 @@ void GameSession::checkCollisions() {
                 p.sprite.visible = false;
                 if (player_.hitPlane()) {
                     enemy_.score++;
-                    sound_.playExplosion();
+                    if (emitAudio) {
+                        sound_.playExplosion();
+                    }
                 } else {
-                    sound_.playHit();
+                    if (emitAudio) {
+                        sound_.playHit();
+                    }
                 }
                 break;
             }
@@ -1030,7 +1554,9 @@ void GameSession::checkCollisions() {
                                  HOUSE_X, BARN_Y, BARN_HALF_W, BARN_HALF_H)) {
             player_.triggerExplosion();
             enemy_.score++;
-            sound_.playExplosion();
+            if (emitAudio) {
+                sound_.playExplosion();
+            }
         }
     }
     if (enemy_.isAlive && !enemy_.exploding && !enemy_.isInvulnerable()) {
@@ -1038,7 +1564,9 @@ void GameSession::checkCollisions() {
                                  HOUSE_X, BARN_Y, BARN_HALF_W, BARN_HALF_H)) {
             enemy_.triggerExplosion();
             player_.score++;
-            sound_.playExplosion();
+            if (emitAudio) {
+                sound_.playExplosion();
+            }
         }
     }
 
@@ -1046,32 +1574,40 @@ void GameSession::checkCollisions() {
         && !player_.grounded && player_.y <= GROUND_Y) {
         player_.triggerExplosion();
         enemy_.score++;
-        sound_.playExplosion();
+        if (emitAudio) {
+            sound_.playExplosion();
+        }
     }
     if (enemy_.isAlive && !enemy_.exploding && !enemy_.isInvulnerable()
         && !enemy_.grounded && enemy_.y <= GROUND_Y) {
         enemy_.triggerExplosion();
         player_.score++;
-        sound_.playExplosion();
+        if (emitAudio) {
+            sound_.playExplosion();
+        }
     }
 }
 
-void GameSession::playerFire(uint16_t spawnedByInputSequence) {
+void GameSession::playerFire(uint16_t spawnedByInputSequence, bool emitAudio) {
     spawnProjectileFromPlane(
         playerBullets_,
         player_,
         worldHalfWidthForAspect(aspect_),
         spawnedByInputSequence
     );
-    sound_.playShoot();
+    if (emitAudio) {
+        sound_.playShoot();
+    }
 }
 
-void GameSession::enemyFire(uint16_t spawnedByInputSequence) {
+void GameSession::enemyFire(uint16_t spawnedByInputSequence, bool emitAudio) {
     spawnProjectileFromPlane(
         enemyBullets_,
         enemy_,
         worldHalfWidthForAspect(aspect_),
         spawnedByInputSequence
     );
-    sound_.playShoot();
+    if (emitAudio) {
+        sound_.playShoot();
+    }
 }

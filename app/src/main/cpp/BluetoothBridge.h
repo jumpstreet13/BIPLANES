@@ -90,8 +90,7 @@ private:
     bool       initialized_ = false;
 
     mutable std::mutex mutex_;
-    BluetoothMatchState latestMatchState_;
-    bool                hasNewMatchState_ = false;
+    std::deque<BluetoothMatchState> pendingMatchStates_;
     std::deque<BluetoothInputState> pendingInputStates_;
     ControlSignal      latestControlSignal_ = ControlSignal::None;
     bool               hasNewControlSignal_ = false;
