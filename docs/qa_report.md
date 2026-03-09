@@ -1,8 +1,8 @@
-# ByPlanes — QA Validation Report
+# BIPLANES — QA Validation Report
 
 **Date**: 2026-03-02
 **Validator**: QA Engineer
-**Project**: ByPlanes
+**Project**: BIPLANES
 **Scope**: Test Scenarios TS-01 through TS-12
 
 ---

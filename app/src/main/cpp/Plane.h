@@ -1,5 +1,5 @@
-#ifndef BYPLANES_PLANE_H
-#define BYPLANES_PLANE_H
+#ifndef BIPLANES_PLANE_H
+#define BIPLANES_PLANE_H
 
 #include <memory>
 #include <cmath>

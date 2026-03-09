@@ -1,5 +1,5 @@
-#ifndef BYPLANES_AICONTROLLER_H
-#define BYPLANES_AICONTROLLER_H
+#ifndef BIPLANES_AICONTROLLER_H
+#define BIPLANES_AICONTROLLER_H
 
 #include "GameConstants.h"
 #include "GameState.h"
@@ -23,4 +23,4 @@ private:
     float fireTimer_ = AI_FIRE_INTERVAL;
 };
 
-#endif //BYPLANES_AICONTROLLER_H
+#endif //BIPLANES_AICONTROLLER_H

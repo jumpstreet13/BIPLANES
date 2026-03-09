@@ -1,5 +1,5 @@
-#ifndef BYPLANES_GAMESESSION_H
-#define BYPLANES_GAMESESSION_H
+#ifndef BIPLANES_GAMESESSION_H
+#define BIPLANES_GAMESESSION_H
 
 #include <array>
 #include <deque>
@@ -235,4 +235,4 @@ private:
     float enemyFireCooldown_ = 0.f;
 };
 
-#endif //BYPLANES_GAMESESSION_H
+#endif //BIPLANES_GAMESESSION_H

@@ -1,5 +1,5 @@
-#ifndef BYPLANES_GAME_H
-#define BYPLANES_GAME_H
+#ifndef BIPLANES_GAME_H
+#define BIPLANES_GAME_H
 
 #include <cstdint>
 #include <deque>
@@ -120,4 +120,4 @@ private:
     bool lobbySpritesLoaded_ = false;
 };
 
-#endif //BYPLANES_GAME_H
+#endif //BIPLANES_GAME_H
