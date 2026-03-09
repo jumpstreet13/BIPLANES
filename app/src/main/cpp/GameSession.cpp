@@ -301,8 +301,8 @@ void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode,
     enemyFireCooldown_ = 0.f;
     rollbackFrames_.clear();
     pendingRemoteInputs_.clear();
-    lastPredictedRemoteInput_ = {};
-    hasLastPredictedRemoteInput_ = false;
+    lastConfirmedRemoteInput_ = {};
+    hasLastConfirmedRemoteInput_ = false;
     predictedRemoteInputAge_ = 0;
     hasPendingRollbackCorrection_ = false;
     pendingRollbackSequence_ = 0;
@@ -462,8 +462,11 @@ bool GameSession::updateBluetoothRollback(float dt, const BluetoothInputState &l
     const bool remoteConfirmed = consumeQueuedRemoteInput(localInput.sequence, remoteInput);
     if (remoteConfirmed) {
         predictedRemoteInputAge_ = 0;
+        lastConfirmedRemoteInput_ = remoteInput;
+        lastConfirmedRemoteInput_.fireTapped = false;
+        hasLastConfirmedRemoteInput_ = true;
     } else {
-        remoteInput = hasLastPredictedRemoteInput_ ? lastPredictedRemoteInput_ : BluetoothInputState{};
+        remoteInput = hasLastConfirmedRemoteInput_ ? lastConfirmedRemoteInput_ : BluetoothInputState{};
         remoteInput.sequence = localInput.sequence;
         remoteInput.fireTapped = false;
         if (predictedRemoteInputAge_ >= REMOTE_PREDICTION_HOLD_FRAMES) {
@@ -483,12 +486,6 @@ bool GameSession::updateBluetoothRollback(float dt, const BluetoothInputState &l
     });
 
     simulateBluetoothRollbackFrame(dt, localInput, remoteInput, true);
-
-    lastPredictedRemoteInput_.upButtonHeld = remoteInput.upButtonHeld;
-    lastPredictedRemoteInput_.downButtonHeld = remoteInput.downButtonHeld;
-    lastPredictedRemoteInput_.fireTapped = false;
-    lastPredictedRemoteInput_.sequence = localInput.sequence;
-    hasLastPredictedRemoteInput_ = true;
 
     trimRollbackHistory();
     background_.update(dt);
@@ -599,8 +596,8 @@ void GameSession::reset() {
     hud_.setScores(player_.score, enemy_.score);
     rollbackFrames_.clear();
     pendingRemoteInputs_.clear();
-    lastPredictedRemoteInput_ = {};
-    hasLastPredictedRemoteInput_ = false;
+    lastConfirmedRemoteInput_ = {};
+    hasLastConfirmedRemoteInput_ = false;
     predictedRemoteInputAge_ = 0;
     hasPendingRollbackCorrection_ = false;
     pendingRollbackSequence_ = 0;
@@ -891,21 +888,17 @@ void GameSession::rebuildRollbackFrom(uint16_t sequence) {
         simulateBluetoothRollbackFrame(it->dt, it->localInput, it->remoteInput, false);
     }
 
-    if (!rollbackFrames_.empty()) {
-        lastPredictedRemoteInput_ = rollbackFrames_.back().remoteInput;
-        lastPredictedRemoteInput_.fireTapped = false;
-        hasLastPredictedRemoteInput_ = true;
-        predictedRemoteInputAge_ = 0;
-        for (auto it = rollbackFrames_.rbegin(); it != rollbackFrames_.rend(); ++it) {
-            if (it->remoteConfirmed) {
-                break;
-            }
-            predictedRemoteInputAge_ = static_cast<uint8_t>(std::min<int>(predictedRemoteInputAge_ + 1, 255));
+    lastConfirmedRemoteInput_ = {};
+    hasLastConfirmedRemoteInput_ = false;
+    predictedRemoteInputAge_ = 0;
+    for (auto it = rollbackFrames_.rbegin(); it != rollbackFrames_.rend(); ++it) {
+        if (it->remoteConfirmed) {
+            lastConfirmedRemoteInput_ = it->remoteInput;
+            lastConfirmedRemoteInput_.fireTapped = false;
+            hasLastConfirmedRemoteInput_ = true;
+            break;
         }
-    } else {
-        lastPredictedRemoteInput_ = {};
-        hasLastPredictedRemoteInput_ = false;
-        predictedRemoteInputAge_ = 0;
+        predictedRemoteInputAge_ = static_cast<uint8_t>(std::min<int>(predictedRemoteInputAge_ + 1, 255));
     }
 
     hud_.setScores(player_.score, enemy_.score);

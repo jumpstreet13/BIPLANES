@@ -153,8 +153,8 @@ private:
     bool localControlsBlue_ = true;
     std::deque<RollbackFrame> rollbackFrames_;
     std::deque<BluetoothInputState> pendingRemoteInputs_;
-    BluetoothInputState lastPredictedRemoteInput_{};
-    bool hasLastPredictedRemoteInput_ = false;
+    BluetoothInputState lastConfirmedRemoteInput_{};
+    bool hasLastConfirmedRemoteInput_ = false;
     uint8_t predictedRemoteInputAge_ = 0;
     bool hasPendingRollbackCorrection_ = false;
     uint16_t pendingRollbackSequence_ = 0;
