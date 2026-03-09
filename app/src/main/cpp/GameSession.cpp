@@ -31,7 +31,7 @@ constexpr float CLIENT_LOCAL_SOFT_RECONCILE_MAX_ALPHA = 0.55f;
 constexpr float CLIENT_LOCAL_RECONCILE_LARGE_ALPHA = 0.72f;
 constexpr size_t CLIENT_SNAPSHOT_HISTORY_LIMIT = 32;
 constexpr size_t ROLLBACK_HISTORY_LIMIT = 240;
-constexpr uint8_t REMOTE_PREDICTION_HOLD_FRAMES = 2;
+constexpr uint8_t REMOTE_PREDICTION_HOLD_FRAMES = 3;
 constexpr float PROJECTILE_MUZZLE_OFFSET = PLANE_HALF_W + BULLET_HALF_SIZE * 1.4f;
 
 float normalizeAngle(float angle) {
