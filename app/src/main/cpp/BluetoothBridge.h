@@ -5,6 +5,11 @@
 #include <mutex>
 #include "GameConstants.h"
 
+enum class BluetoothAuthority : uint8_t {
+    Blue = 0,
+    Red = 1
+};
+
 struct BluetoothInputState {
     bool upButtonHeld = false;
     bool downButtonHeld = false;
@@ -21,6 +26,7 @@ struct BluetoothPlaneState {
     float explosionTimer = 0.f;
     uint8_t hp = PLANE_MAX_HP;
     uint8_t score = 0;
+    uint16_t lastResolvedProjectileId = 0;
     bool isAlive = true;
     bool grounded = false;
     bool exploding = false;
@@ -28,13 +34,15 @@ struct BluetoothPlaneState {
 
 struct BluetoothProjectileState {
     uint8_t count = 0;
+    uint16_t id[MAX_PROJECTILES] = {};
     float x[MAX_PROJECTILES] = {};
     float y[MAX_PROJECTILES] = {};
 };
 
 struct BluetoothMatchState {
-    uint16_t acknowledgedInputSequence = 0;
-    float hostTimestamp = 0.f;
+    BluetoothAuthority authority = BluetoothAuthority::Blue;
+    uint16_t stateSequence = 0;
+    float simulationTimestamp = 0.f;
     BluetoothPlaneState bluePlane;
     BluetoothPlaneState redPlane;
     BluetoothProjectileState blueProjectiles;
@@ -69,6 +77,7 @@ public:
     void startAdvertising();
     void startScanning();
     void disconnect();
+    void clearPendingGameState();
 
     // Called from JNI callback -- thread safe
     void onPacketReceived(const uint8_t* data, int len);

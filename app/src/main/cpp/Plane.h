@@ -1,6 +1,7 @@
 #ifndef BIPLANES_PLANE_H
 #define BIPLANES_PLANE_H
 
+#include <cstdint>
 #include <memory>
 #include <cmath>
 #include "Sprite.h"
@@ -21,6 +22,7 @@ struct Plane {
 
     // Hit points (3-hit system)
     int hp = PLANE_MAX_HP;
+    uint16_t lastResolvedProjectileId = 0;
 
     // Takeoff
     bool grounded = false;

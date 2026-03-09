@@ -24,6 +24,7 @@ add_library(byplanes SHARED
         HUD.cpp
         AIController.cpp
         BluetoothBridge.cpp
+        BluetoothVirtualServer.cpp
         SoundEngine.cpp)
 
 if(ANDROID)

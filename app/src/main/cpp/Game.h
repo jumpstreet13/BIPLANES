@@ -12,6 +12,7 @@
 #include "Sprite.h"
 #include "Background.h"
 #include "BluetoothBridge.h"
+#include "BluetoothVirtualServer.h"
 
 struct android_app;
 
@@ -50,6 +51,7 @@ private:
     void handlePauseUiTap(float wx, float wy);
     void processBluetoothControlSignals();
     void leaveMatchToMainMenu(bool notifyRemote);
+    void clearBluetoothMatchState();
     void enqueueRemoteBluetoothInput(const BluetoothInputState &input);
     BluetoothInputState consumeRemoteBluetoothInputForStep();
     void startGameplayCountdown();
@@ -107,6 +109,7 @@ private:
 
     // Bluetooth lobby
     BluetoothBridge *btBridge_ = nullptr;
+    std::unique_ptr<BluetoothVirtualServer> btVirtualServer_;
     std::deque<BluetoothInputState> remoteBluetoothInputBuffer_;
     BluetoothInputState lastAppliedRemoteBluetoothInput_;
     uint16_t consumedRemoteBluetoothInputSequence_ = 0;

@@ -220,6 +220,13 @@ void Game::leaveMatchToMainMenu(bool notifyRemote) {
         btBridge_->disconnect();
     }
 
+    clearBluetoothMatchState();
+    stopGameplayCountdown();
+    state_ = GameState::MainMenu;
+    sessionInitialized_ = false;
+}
+
+void Game::clearBluetoothMatchState() {
     localPauseActive_ = false;
     remotePauseActive_ = false;
     opponentLeftDialogActive_ = false;
@@ -229,9 +236,10 @@ void Game::leaveMatchToMainMenu(bool notifyRemote) {
     localBluetoothInputSequence_ = 0;
     bluetoothSimulationAccumulator_ = 0.f;
     pendingBluetoothLocalFireTap_ = false;
-    stopGameplayCountdown();
-    state_ = GameState::MainMenu;
-    sessionInitialized_ = false;
+    btVirtualServer_.reset();
+    if (btBridge_) {
+        btBridge_->clearPendingGameState();
+    }
 }
 
 void Game::enqueueRemoteBluetoothInput(const BluetoothInputState &input) {
@@ -312,14 +320,8 @@ void Game::processBluetoothControlSignals() {
             case BluetoothBridge::ControlSignal::EndMatch:
                 aout << "BluetoothLobby: Opponent ended the match" << std::endl;
                 btBridge_->disconnect();
-                localPauseActive_ = false;
-                remotePauseActive_ = false;
+                clearBluetoothMatchState();
                 opponentLeftDialogActive_ = true;
-                remoteBluetoothInputBuffer_.clear();
-                lastAppliedRemoteBluetoothInput_ = {};
-                consumedRemoteBluetoothInputSequence_ = 0;
-                bluetoothSimulationAccumulator_ = 0.f;
-                pendingBluetoothLocalFireTap_ = false;
                 stopGameplayCountdown();
                 return;
             case BluetoothBridge::ControlSignal::None:
@@ -556,55 +558,19 @@ void Game::update(float dt) {
             const auto &touch = inputManager_.getState();
             bool gameOver = false;
             if (pendingMode_ == GameMode::VsBluetooth && btBridge_) {
-                pendingBluetoothLocalFireTap_ = pendingBluetoothLocalFireTap_ || touch.fireTapped;
-                BluetoothInputState remoteInput;
-                while (btBridge_->pollReceivedInputState(remoteInput)) {
-                    session_.queueBluetoothRemoteInput(remoteInput);
+                if (btVirtualServer_) {
+                    gameOver = btVirtualServer_->update(dt, touch, *btBridge_);
                 }
-                session_.processBluetoothRollbackCorrections();
-
-                bluetoothSimulationAccumulator_ = std::min(
-                    bluetoothSimulationAccumulator_ + dt,
-                    BLUETOOTH_SIMULATION_STEP * BLUETOOTH_MAX_STEPS_PER_FRAME
-                );
-
-                while (bluetoothSimulationAccumulator_ >= BLUETOOTH_SIMULATION_STEP) {
-                    BluetoothInputState localInput;
-                    localInput.upButtonHeld = touch.upButtonHeld;
-                    localInput.downButtonHeld = touch.downButtonHeld;
-                    localInput.fireTapped = pendingBluetoothLocalFireTap_;
-                    localInput.sequence = static_cast<uint16_t>(localBluetoothInputSequence_ + 1);
-                    localBluetoothInputSequence_ = localInput.sequence;
-
-                    btBridge_->sendInputState(localInput);
-                    gameOver = session_.updateBluetoothRollback(
-                        BLUETOOTH_SIMULATION_STEP,
-                        localInput
-                    );
-
-                    pendingBluetoothLocalFireTap_ = false;
-                    bluetoothSimulationAccumulator_ -= BLUETOOTH_SIMULATION_STEP;
-
-                    while (btBridge_->pollReceivedInputState(remoteInput)) {
-                        session_.queueBluetoothRemoteInput(remoteInput);
-                    }
-                    session_.processBluetoothRollbackCorrections();
-                    gameOver = gameOver || session_.getWinner() != 0;
-                    if (gameOver) {
-                        break;
-                    }
-                }
-
-                session_.processBluetoothRollbackCorrections();
-                session_.setBluetoothRemoteRenderAlpha(
-                    bluetoothSimulationAccumulator_ / BLUETOOTH_SIMULATION_STEP
-                );
-                session_.updateBluetoothRemoteRender(dt);
-                gameOver = gameOver || session_.getWinner() != 0;
             } else {
                 gameOver = session_.update(dt, touch);
             }
             if (gameOver) {
+                if (pendingMode_ == GameMode::VsBluetooth) {
+                    if (btVirtualServer_ && btBridge_ && btBridge_->isConnected()) {
+                        btVirtualServer_->forceSendLocalState(*btBridge_);
+                    }
+                    clearBluetoothMatchState();
+                }
                 state_ = GameState::GameOver;
                 winner_ = session_.getWinner();
                 localPauseActive_ = false;
@@ -870,8 +836,17 @@ void Game::initSession() {
     const bool localControlsBlue = pendingMode_ != GameMode::VsBluetooth
                                    || !btBridge_
                                    || btBridge_->isHostRole();
+    if (pendingMode_ == GameMode::VsBluetooth) {
+        clearBluetoothMatchState();
+    }
     session_.init(assetManager, aspect, pendingMode_, aiDifficulty_, localControlsBlue);
     session_.reset();
+    if (pendingMode_ == GameMode::VsBluetooth) {
+        btVirtualServer_ = std::make_unique<BluetoothVirtualServer>(session_, localControlsBlue);
+        btVirtualServer_->reset();
+    } else {
+        btVirtualServer_.reset();
+    }
     sessionInitialized_ = true;
     localPauseActive_ = false;
     remotePauseActive_ = false;

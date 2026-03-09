@@ -4,21 +4,25 @@ void ProjectilePool::init(std::shared_ptr<TextureAsset> texture, float worldHalf
     texture_ = std::move(texture);
     worldHalfW_ = worldHalfW;
     for (auto &p : projectiles_) {
+        p.id = 0;
         p.active = false;
+        p.predictedRemoteImpact = false;
         p.sprite.init(texture_, BULLET_HALF_SIZE, BULLET_HALF_SIZE);
         p.sprite.visible = false;
     }
 }
 
-void ProjectilePool::spawn(float x, float y, float velX, uint16_t spawnedByInputSequence) {
+void ProjectilePool::spawn(float x, float y, float velX, uint16_t spawnedByInputSequence, uint16_t projectileId) {
     for (auto &p : projectiles_) {
         if (!p.active) {
+            p.id = projectileId;
             p.x = x;
             p.y = y;
             p.velX = velX;
             p.velY = 0.f;
             p.lifetime = BULLET_LIFETIME;
             p.spawnedByInputSequence = spawnedByInputSequence;
+            p.predictedRemoteImpact = false;
             p.active = true;
             p.sprite.visible = true;
             return;
@@ -26,13 +30,15 @@ void ProjectilePool::spawn(float x, float y, float velX, uint16_t spawnedByInput
     }
 }
 
-void ProjectilePool::spawnDirectional(float x, float y, float velX, float velY, uint16_t spawnedByInputSequence) {
+void ProjectilePool::spawnDirectional(float x, float y, float velX, float velY, uint16_t spawnedByInputSequence, uint16_t projectileId) {
     for (auto &p : projectiles_) {
         if (!p.active) {
+            p.id = projectileId;
             p.x = x; p.y = y;
             p.velX = velX; p.velY = velY;
             p.lifetime = BULLET_LIFETIME;
             p.spawnedByInputSequence = spawnedByInputSequence;
+            p.predictedRemoteImpact = false;
             p.active = true;
             p.sprite.visible = true;
             return;
@@ -53,15 +59,19 @@ void ProjectilePool::updateAll(float dt) {
 
         // Bullet hits ground — disappear
         if (p.y <= GROUND_Y) {
+            p.id = 0;
             p.active = false;
             p.spawnedByInputSequence = 0;
+            p.predictedRemoteImpact = false;
             p.sprite.visible = false;
             continue;
         }
 
         if (p.lifetime <= 0.f) {
+            p.id = 0;
             p.active = false;
             p.spawnedByInputSequence = 0;
+            p.predictedRemoteImpact = false;
             p.sprite.visible = false;
         }
 

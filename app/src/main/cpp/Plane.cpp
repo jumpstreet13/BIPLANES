@@ -114,6 +114,7 @@ void Plane::init(std::shared_ptr<TextureAsset> texture,
     isAlive = true;
     score = 0;
     hp = PLANE_MAX_HP;
+    lastResolvedProjectileId = 0;
     grounded = false;
     groundSpeed = 0.f;
     exploding = false;
@@ -230,6 +231,7 @@ void Plane::reset(float startX, bool facingLeft) {
     angle = facingLeft ? (float)M_PI : 0.f;
     isAlive = true;
     hp = PLANE_MAX_HP;
+    lastResolvedProjectileId = 0;
     grounded = false;
     groundSpeed = 0.f;
     exploding = false;

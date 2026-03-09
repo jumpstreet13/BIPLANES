@@ -26,7 +26,7 @@ public:
     void draw(const Shader &shader) const;
     int getWinner() const;
     void reset();
-    BluetoothMatchState buildBluetoothMatchState(uint16_t acknowledgedInputSequence) const;
+    BluetoothMatchState buildBluetoothMatchState(uint16_t stateSequence) const;
     void applyBluetoothMatchState(const BluetoothMatchState &state);
     void applyBluetoothRemoteOwnedState(const BluetoothMatchState &state);
     void setBluetoothRemoteRenderAlpha(float alpha);
@@ -47,18 +47,21 @@ private:
         float impactEffectY = 0.f;
         int hp = PLANE_MAX_HP;
         int score = 0;
+        uint16_t lastResolvedProjectileId = 0;
         bool isAlive = true;
         bool grounded = false;
         bool exploding = false;
     };
 
     struct ProjectileSimulationState {
+        uint16_t id = 0;
         float x = 0.f;
         float y = 0.f;
         float velX = 0.f;
         float velY = 0.f;
         float lifetime = 0.f;
         uint16_t spawnedByInputSequence = 0;
+        bool predictedRemoteImpact = false;
         bool active = false;
     };
 
@@ -129,6 +132,11 @@ private:
     void applyPlaneState(Plane &plane, const BluetoothPlaneState &state, float dt, bool smooth, float smoothingSpeed);
     void applyOwnedRemotePlaneState(Plane &plane, const BluetoothPlaneState &state, float dt, bool smooth, float smoothingSpeed);
     static void applyAuthoritativePlaneFields(Plane &plane, const BluetoothPlaneState &state);
+    void applyAuthoritativeHitConfirmation(
+        Plane &plane,
+        const BluetoothPlaneState &state,
+        ProjectilePool &ownedProjectiles
+    );
     void applyLocalPlaneRenderSmoothing(Plane &plane, float dt);
     void recordPredictedLocalInput(uint16_t sequence, float dt, const TouchState &predictedInput);
     void reconcilePredictedLocalPlane(
@@ -137,6 +145,11 @@ private:
         uint16_t acknowledgedInputSequence
     );
     void predictBluetoothClientEffects();
+    void checkBluetoothLocalAuthoritativeCollisions(bool emitAudio = true);
+    static void deactivateProjectile(Projectile &projectile);
+    static void consumeProjectileById(ProjectilePool &pool, uint16_t projectileId);
+    void rememberConsumedRemoteProjectile(uint16_t projectileId);
+    bool isRemoteProjectileConsumed(uint16_t projectileId) const;
     void reconcileLocalProjectiles(
         ProjectilePool &pool,
         const BluetoothProjectileState &state,
@@ -155,6 +168,7 @@ private:
         const ProjectilePool &pool,
         std::array<float, MAX_PROJECTILES> &visibleAges,
         std::array<bool, MAX_PROJECTILES> &wasActive,
+        std::array<uint16_t, MAX_PROJECTILES> &trackedIds,
         std::array<float, MAX_PROJECTILES> &originX,
         std::array<float, MAX_PROJECTILES> &originY,
         float renderedAngle,
@@ -179,7 +193,13 @@ private:
     bool sampleRemoteOwnedSnapshot(BluetoothMatchState &outState) const;
     float currentRemoteOwnedInterpolationDelay() const;
     static void captureProjectiles(const ProjectilePool &pool, BluetoothProjectileState &outState);
-    void applyProjectiles(ProjectilePool &pool, const BluetoothProjectileState &state, float dt, bool smooth);
+    void applyProjectiles(
+        ProjectilePool &pool,
+        const BluetoothProjectileState &state,
+        float dt,
+        bool smooth,
+        bool ignoreConsumedProjectiles = false
+    );
 
     Plane player_;
     Plane enemy_;
@@ -213,6 +233,8 @@ private:
     std::array<float, MAX_PROJECTILES> enemyBulletRenderVisibleAges_{};
     std::array<bool, MAX_PROJECTILES> playerBulletRenderWasActive_{};
     std::array<bool, MAX_PROJECTILES> enemyBulletRenderWasActive_{};
+    std::array<uint16_t, MAX_PROJECTILES> playerBulletRenderIds_{};
+    std::array<uint16_t, MAX_PROJECTILES> enemyBulletRenderIds_{};
     std::array<float, MAX_PROJECTILES> playerBulletRenderOriginX_{};
     std::array<float, MAX_PROJECTILES> playerBulletRenderOriginY_{};
     std::array<float, MAX_PROJECTILES> enemyBulletRenderOriginX_{};
@@ -230,9 +252,11 @@ private:
     float simulationTime_ = 0.f;
     float aspect_ = 1.f;
     float bluetoothRemoteRenderAlpha_ = 1.f;
+    uint16_t nextProjectileId_ = 0;
 
     float playerFireCooldown_ = 0.f;
     float enemyFireCooldown_ = 0.f;
+    std::deque<uint16_t> consumedRemoteProjectileIds_;
 };
 
 #endif //BIPLANES_GAMESESSION_H

@@ -7,12 +7,14 @@
 #include "GameConstants.h"
 
 struct Projectile {
+    uint16_t id = 0;
     float x = 0.f;
     float y = 0.f;
     float velX = 0.f;
     float velY = 0.f;
     float lifetime = 0.f;
     uint16_t spawnedByInputSequence = 0;
+    bool predictedRemoteImpact = false;
     bool active = false;
     Sprite sprite;
 };
@@ -20,8 +22,8 @@ struct Projectile {
 class ProjectilePool {
 public:
     void init(std::shared_ptr<TextureAsset> texture, float worldHalfW);
-    void spawn(float x, float y, float velX, uint16_t spawnedByInputSequence = 0);
-    void spawnDirectional(float x, float y, float velX, float velY, uint16_t spawnedByInputSequence = 0);
+    void spawn(float x, float y, float velX, uint16_t spawnedByInputSequence = 0, uint16_t projectileId = 0);
+    void spawnDirectional(float x, float y, float velX, float velY, uint16_t spawnedByInputSequence = 0, uint16_t projectileId = 0);
     void updateAll(float dt);
     void drawAll(const Shader &shader) const;
     std::array<Projectile, MAX_PROJECTILES> &getProjectiles() { return projectiles_; }

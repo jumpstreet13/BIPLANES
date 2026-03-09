@@ -16,9 +16,10 @@ constexpr uint8_t INPUT_FLAG_UP = 1 << 0;
 constexpr uint8_t INPUT_FLAG_DOWN = 1 << 1;
 constexpr uint8_t INPUT_FLAG_FIRE = 1 << 2;
 
-constexpr int PLANE_PACKET_SIZE = sizeof(float) * 6 + 3;
-constexpr int PROJECTILE_PACKET_SIZE = 1 + sizeof(float) * MAX_PROJECTILES * 2;
-constexpr int MATCH_PACKET_SIZE = 1 + sizeof(uint16_t) + sizeof(float) + PLANE_PACKET_SIZE * 2 + PROJECTILE_PACKET_SIZE * 2;
+constexpr int PLANE_PACKET_SIZE = sizeof(float) * 6 + 3 + sizeof(uint16_t);
+constexpr int PROJECTILE_PACKET_SIZE = 1 + sizeof(uint16_t) * MAX_PROJECTILES + sizeof(float) * MAX_PROJECTILES * 2;
+constexpr int MATCH_PACKET_SIZE =
+    1 + 1 + sizeof(uint16_t) + sizeof(float) + PLANE_PACKET_SIZE * 2 + PROJECTILE_PACKET_SIZE * 2;
 constexpr int INPUT_PACKET_SIZE = 1 + 1 + sizeof(uint16_t);
 
 bool clearJniException(JNIEnv* env, const char* context) {
@@ -120,6 +121,7 @@ void writePlaneState(uint8_t*& dst, const BluetoothPlaneState& plane) {
     *dst++ = plane.hp;
     *dst++ = plane.score;
     *dst++ = encodePlaneFlags(plane);
+    writeUint16(dst, plane.lastResolvedProjectileId);
 }
 
 BluetoothPlaneState readPlaneState(const uint8_t*& src) {
@@ -133,6 +135,7 @@ BluetoothPlaneState readPlaneState(const uint8_t*& src) {
     plane.hp = *src++;
     plane.score = *src++;
     const uint8_t flags = *src++;
+    plane.lastResolvedProjectileId = readUint16(src);
     plane.isAlive = (flags & PLANE_FLAG_ALIVE) != 0;
     plane.grounded = (flags & PLANE_FLAG_GROUNDED) != 0;
     plane.exploding = (flags & PLANE_FLAG_EXPLODING) != 0;
@@ -142,6 +145,9 @@ BluetoothPlaneState readPlaneState(const uint8_t*& src) {
 void writeProjectileState(uint8_t*& dst, const BluetoothProjectileState& projectileState) {
     const uint8_t count = std::min<int>(projectileState.count, MAX_PROJECTILES);
     *dst++ = count;
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        writeUint16(dst, i < count ? projectileState.id[i] : 0);
+    }
     for (int i = 0; i < MAX_PROJECTILES; ++i) {
         writeFloat(dst, i < count ? projectileState.x[i] : 0.f);
     }
@@ -153,6 +159,9 @@ void writeProjectileState(uint8_t*& dst, const BluetoothProjectileState& project
 BluetoothProjectileState readProjectileState(const uint8_t*& src) {
     BluetoothProjectileState projectileState;
     projectileState.count = std::min<int>(*src++, MAX_PROJECTILES);
+    for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        projectileState.id[i] = readUint16(src);
+    }
     for (int i = 0; i < MAX_PROJECTILES; ++i) {
         projectileState.x[i] = readFloat(src);
     }
@@ -242,8 +251,9 @@ void BluetoothBridge::sendMatchState(const BluetoothMatchState& state) {
     uint8_t packet[MATCH_PACKET_SIZE] = {};
     uint8_t* dst = packet;
     *dst++ = MATCH_STATE_PACKET_TYPE;
-    writeUint16(dst, state.acknowledgedInputSequence);
-    writeFloat(dst, state.hostTimestamp);
+    *dst++ = static_cast<uint8_t>(state.authority);
+    writeUint16(dst, state.stateSequence);
+    writeFloat(dst, state.simulationTimestamp);
     writePlaneState(dst, state.bluePlane);
     writePlaneState(dst, state.redPlane);
     writeProjectileState(dst, state.blueProjectiles);
@@ -360,9 +370,18 @@ void BluetoothBridge::startScanning() {
 }
 
 void BluetoothBridge::disconnect() {
+    clearPendingGameState();
     if (initialized_ && btManager_ && disconnectMethod_) {
         env_->CallVoidMethod(btManager_, disconnectMethod_);
     }
+}
+
+void BluetoothBridge::clearPendingGameState() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pendingMatchStates_.clear();
+    pendingInputStates_.clear();
+    latestControlSignal_ = ControlSignal::None;
+    hasNewControlSignal_ = false;
 }
 
 void BluetoothBridge::onPacketReceived(const uint8_t* data, int len) {
@@ -403,8 +422,9 @@ void BluetoothBridge::onPacketReceived(const uint8_t* data, int len) {
 
     const uint8_t* src = data + 1;
     BluetoothMatchState state;
-    state.acknowledgedInputSequence = readUint16(src);
-    state.hostTimestamp = readFloat(src);
+    state.authority = static_cast<BluetoothAuthority>(*src++);
+    state.stateSequence = readUint16(src);
+    state.simulationTimestamp = readFloat(src);
     state.bluePlane = readPlaneState(src);
     state.redPlane = readPlaneState(src);
     state.blueProjectiles = readProjectileState(src);

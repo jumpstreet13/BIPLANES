@@ -112,7 +112,8 @@ void spawnProjectileFromPlane(
     ProjectilePool &pool,
     const Plane &plane,
     float worldHalfW,
-    uint16_t spawnedByInputSequence
+    uint16_t spawnedByInputSequence,
+    uint16_t projectileId
 ) {
     const float bulletVelX = cosf(plane.angle) * BULLET_SPEED;
     const float bulletVelY = sinf(plane.angle) * BULLET_SPEED;
@@ -122,7 +123,7 @@ void spawnProjectileFromPlane(
         BULLET_HALF_SIZE
     );
     const float spawnY = plane.y + sinf(plane.angle) * PROJECTILE_MUZZLE_OFFSET;
-    pool.spawnDirectional(spawnX, spawnY, bulletVelX, bulletVelY, spawnedByInputSequence);
+    pool.spawnDirectional(spawnX, spawnY, bulletVelX, bulletVelY, spawnedByInputSequence, projectileId);
 }
 
 BluetoothPlaneState capturePlaneState(const Plane &plane) {
@@ -135,6 +136,7 @@ BluetoothPlaneState capturePlaneState(const Plane &plane) {
     state.explosionTimer = plane.explosionTimer;
     state.hp = static_cast<uint8_t>(std::clamp(plane.hp, 0, 255));
     state.score = static_cast<uint8_t>(std::clamp(plane.score, 0, 255));
+    state.lastResolvedProjectileId = plane.lastResolvedProjectileId;
     state.isAlive = plane.isAlive;
     state.grounded = plane.grounded;
     state.exploding = plane.exploding;
@@ -226,6 +228,9 @@ BluetoothPlaneState interpolatePlaneState(
     result.explosionTimer = lerpFloat(from.explosionTimer, to.explosionTimer, alpha);
     result.hp = alpha < 0.5f ? from.hp : to.hp;
     result.score = alpha < 0.5f ? from.score : to.score;
+    result.lastResolvedProjectileId = alpha < 0.5f
+                                      ? from.lastResolvedProjectileId
+                                      : to.lastResolvedProjectileId;
     result.isAlive = alpha < 0.5f ? from.isAlive : to.isAlive;
     result.grounded = alpha < 0.5f ? from.grounded : to.grounded;
     result.exploding = alpha < 0.5f ? from.exploding : to.exploding;
@@ -246,7 +251,8 @@ BluetoothProjectileState interpolateProjectileState(
     for (int i = 0; i < result.count; ++i) {
         const bool hasFrom = i < from.count;
         const bool hasTo = i < to.count;
-        if (hasFrom && hasTo) {
+        if (hasFrom && hasTo && from.id[i] == to.id[i]) {
+            result.id[i] = from.id[i];
             result.x[i] = Utility::wrapWorldX(
                 from.x[i] + shortestWrappedDx(from.x[i], to.x[i], worldHalfW) * alpha,
                 worldHalfW,
@@ -254,9 +260,11 @@ BluetoothProjectileState interpolateProjectileState(
             );
             result.y[i] = lerpFloat(from.y[i], to.y[i], alpha);
         } else if (hasTo) {
+            result.id[i] = to.id[i];
             result.x[i] = to.x[i];
             result.y[i] = to.y[i];
         } else if (hasFrom) {
+            result.id[i] = from.id[i];
             result.x[i] = from.x[i];
             result.y[i] = from.y[i];
         }
@@ -333,6 +341,8 @@ void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode,
     remoteOwnedSnapshotJitter_ = 0.01f;
     simulationTime_ = 0.f;
     bluetoothRemoteRenderAlpha_ = 1.f;
+    nextProjectileId_ = 0;
+    consumedRemoteProjectileIds_.clear();
     resetRemotePlaneRenderState();
     resetRemoteBulletRenderState();
 }
@@ -375,6 +385,9 @@ bool GameSession::update(float dt, const TouchState &input) {
 
 bool GameSession::updateBluetoothHost(float dt, const TouchState &localInput) {
     simulationTime_ += dt;
+    background_.update(dt);
+    player_.updatePredictedEffects(dt);
+    enemy_.updatePredictedEffects(dt);
     if (playerFireCooldown_ > 0.f) playerFireCooldown_ -= dt;
     if (enemyFireCooldown_ > 0.f) enemyFireCooldown_ -= dt;
 
@@ -394,29 +407,34 @@ bool GameSession::updateBluetoothHost(float dt, const TouchState &localInput) {
         playerFireCooldown_ = FIRE_COOLDOWN;
     }
 
-    if (hasRemoteOwnedState_
-        && enemy_.isAlive
-        && !enemy_.exploding
-        && enemy_.respawnTimer <= 0.f) {
+    if (hasRemoteOwnedState_) {
         BluetoothMatchState bufferedRemoteState = remoteOwnedState_;
         sampleRemoteOwnedSnapshot(bufferedRemoteState);
+        const int locallyOwnedRedScore = enemy_.score;
+        player_.score = std::max(player_.score, static_cast<int>(bufferedRemoteState.bluePlane.score));
+        applyAuthoritativeHitConfirmation(enemy_, bufferedRemoteState.redPlane, playerBullets_);
         applyOwnedRemotePlaneState(
             enemy_,
             bufferedRemoteState.redPlane,
             dt,
-            false,
+            true,
             CLIENT_PLANE_SMOOTHING
         );
-        applyProjectiles(enemyBullets_, bufferedRemoteState.redProjectiles, dt, true);
+        applyAuthoritativePlaneFields(enemy_, bufferedRemoteState.redPlane);
+        enemy_.score = locallyOwnedRedScore;
+        syncPlaneSprite(enemy_);
+        applyProjectiles(enemyBullets_, bufferedRemoteState.redProjectiles, dt, true, true);
     }
 
     playerBullets_.updateAll(dt);
-    background_.update(dt);
-
-    checkCollisions();
+    checkBluetoothLocalAuthoritativeCollisions();
+    predictBluetoothClientEffects();
+    advanceRemotePlaneRenderSample();
 
     hud_.setScores(player_.score, enemy_.score);
     hud_.update(dt);
+    player_.damageEffectTimer += dt;
+    enemy_.damageEffectTimer += dt;
 
     return getWinner() != 0;
 }
@@ -443,6 +461,9 @@ void GameSession::updateBluetoothClient(float dt, const TouchState &localInput) 
     if (clientHasTargetState_) {
         BluetoothMatchState bufferedState = clientTargetState_;
         sampleBufferedSnapshot(bufferedState);
+        const int locallyOwnedBlueScore = player_.score;
+        enemy_.score = std::max(enemy_.score, static_cast<int>(bufferedState.redPlane.score));
+        applyAuthoritativeHitConfirmation(player_, bufferedState.bluePlane, enemyBullets_);
         applyPlaneState(
             player_,
             bufferedState.bluePlane,
@@ -450,16 +471,14 @@ void GameSession::updateBluetoothClient(float dt, const TouchState &localInput) 
             true,
             CLIENT_PLANE_SMOOTHING
         );
-        applyProjectiles(playerBullets_, bufferedState.blueProjectiles, dt, true);
-        if (planeHasAuthoritativeEventChange(enemy_, clientTargetState_.redPlane)) {
-            applyPlaneState(enemy_, clientTargetState_.redPlane, 0.f, false, CLIENT_PLANE_SMOOTHING);
-            applyProjectiles(enemyBullets_, clientTargetState_.redProjectiles, 0.f, false);
-        } else {
-            applyAuthoritativePlaneFields(enemy_, clientTargetState_.redPlane);
-        }
-        hud_.setScores(player_.score, enemy_.score);
+        player_.score = locallyOwnedBlueScore;
+        syncPlaneSprite(player_);
+        applyProjectiles(playerBullets_, bufferedState.blueProjectiles, dt, true, true);
     }
+    checkBluetoothLocalAuthoritativeCollisions();
     predictBluetoothClientEffects();
+    advanceRemotePlaneRenderSample();
+    hud_.setScores(player_.score, enemy_.score);
     hud_.update(dt);
     player_.damageEffectTimer += dt;
     enemy_.damageEffectTimer += dt;
@@ -631,19 +650,23 @@ void GameSession::reset() {
     }
 
     for (auto &projectile : playerBullets_.getProjectiles()) {
+        projectile.id = 0;
         projectile.active = false;
         projectile.velX = 0.f;
         projectile.velY = 0.f;
         projectile.lifetime = 0.f;
         projectile.spawnedByInputSequence = 0;
+        projectile.predictedRemoteImpact = false;
         projectile.sprite.visible = false;
     }
     for (auto &projectile : enemyBullets_.getProjectiles()) {
+        projectile.id = 0;
         projectile.active = false;
         projectile.velX = 0.f;
         projectile.velY = 0.f;
         projectile.lifetime = 0.f;
         projectile.spawnedByInputSequence = 0;
+        projectile.predictedRemoteImpact = false;
         projectile.sprite.visible = false;
     }
 
@@ -677,14 +700,17 @@ void GameSession::reset() {
     remoteOwnedSnapshotJitter_ = 0.01f;
     simulationTime_ = 0.f;
     bluetoothRemoteRenderAlpha_ = 1.f;
+    nextProjectileId_ = 0;
+    consumedRemoteProjectileIds_.clear();
     resetRemotePlaneRenderState();
     resetRemoteBulletRenderState();
 }
 
-BluetoothMatchState GameSession::buildBluetoothMatchState(uint16_t acknowledgedInputSequence) const {
+BluetoothMatchState GameSession::buildBluetoothMatchState(uint16_t stateSequence) const {
     BluetoothMatchState state;
-    state.acknowledgedInputSequence = acknowledgedInputSequence;
-    state.hostTimestamp = simulationTime_;
+    state.authority = localControlsBlue_ ? BluetoothAuthority::Blue : BluetoothAuthority::Red;
+    state.stateSequence = stateSequence;
+    state.simulationTimestamp = simulationTime_;
     state.bluePlane = capturePlaneState(player_);
     state.redPlane = capturePlaneState(enemy_);
     captureProjectiles(playerBullets_, state.blueProjectiles);
@@ -693,16 +719,17 @@ BluetoothMatchState GameSession::buildBluetoothMatchState(uint16_t acknowledgedI
 }
 
 void GameSession::applyBluetoothMatchState(const BluetoothMatchState &state) {
+    if (state.authority != BluetoothAuthority::Blue) {
+        return;
+    }
+
     clientTargetState_ = state;
     clientHasTargetState_ = true;
     pushBufferedSnapshot(state);
+    enemy_.score = std::max(enemy_.score, static_cast<int>(state.redPlane.score));
     if (!clientStateInitialized_) {
         applyPlaneState(player_, state.bluePlane, 0.f, false, CLIENT_PLANE_SMOOTHING);
-        applyProjectiles(playerBullets_, state.blueProjectiles, 0.f, false);
-        if (!localControlsBlue_) {
-            applyPlaneState(enemy_, state.redPlane, 0.f, false, CLIENT_PLANE_SMOOTHING);
-            applyProjectiles(enemyBullets_, state.redProjectiles, 0.f, false);
-        }
+        applyProjectiles(playerBullets_, state.blueProjectiles, 0.f, false, true);
         hud_.setScores(player_.score, enemy_.score);
         clientStateInitialized_ = true;
         pendingLocalInputs_.clear();
@@ -713,9 +740,14 @@ void GameSession::applyBluetoothMatchState(const BluetoothMatchState &state) {
 }
 
 void GameSession::applyBluetoothRemoteOwnedState(const BluetoothMatchState &state) {
+    if (state.authority != BluetoothAuthority::Red) {
+        return;
+    }
+
     remoteOwnedState_ = state;
     hasRemoteOwnedState_ = true;
     pushRemoteOwnedSnapshot(state);
+    player_.score = std::max(player_.score, static_cast<int>(state.bluePlane.score));
 }
 
 void GameSession::setBluetoothRemoteRenderAlpha(float alpha) {
@@ -788,6 +820,7 @@ void GameSession::updateBluetoothRemoteRender(float dt) {
         playerBullets_,
         playerBulletRenderVisibleAges_,
         playerBulletRenderWasActive_,
+        playerBulletRenderIds_,
         playerBulletRenderOriginX_,
         playerBulletRenderOriginY_,
         renderedRemotePlaneRenderSample_.angle,
@@ -799,6 +832,7 @@ void GameSession::updateBluetoothRemoteRender(float dt) {
         enemyBullets_,
         enemyBulletRenderVisibleAges_,
         enemyBulletRenderWasActive_,
+        enemyBulletRenderIds_,
         enemyBulletRenderOriginX_,
         enemyBulletRenderOriginY_,
         renderedRemotePlaneRenderSample_.angle,
@@ -935,6 +969,8 @@ void GameSession::resetRemoteBulletRenderState() {
     enemyBulletRenderVisibleAges_.fill(0.f);
     playerBulletRenderWasActive_.fill(false);
     enemyBulletRenderWasActive_.fill(false);
+    playerBulletRenderIds_.fill(0);
+    enemyBulletRenderIds_.fill(0);
     playerBulletRenderOriginX_.fill(0.f);
     playerBulletRenderOriginY_.fill(0.f);
     enemyBulletRenderOriginX_.fill(0.f);
@@ -945,6 +981,7 @@ void GameSession::updateBulletRenderVisibleAges(
     const ProjectilePool &pool,
     std::array<float, MAX_PROJECTILES> &visibleAges,
     std::array<bool, MAX_PROJECTILES> &wasActive,
+    std::array<uint16_t, MAX_PROJECTILES> &trackedIds,
     std::array<float, MAX_PROJECTILES> &originX,
     std::array<float, MAX_PROJECTILES> &originY,
     float renderedAngle,
@@ -958,12 +995,14 @@ void GameSession::updateBulletRenderVisibleAges(
         if (!projectiles[i].active) {
             visibleAges[i] = 0.f;
             wasActive[i] = false;
+            trackedIds[i] = 0;
             continue;
         }
 
-        if (!wasActive[i]) {
+        if (!wasActive[i] || trackedIds[i] != projectiles[i].id) {
             visibleAges[i] = 0.f;
             wasActive[i] = true;
+            trackedIds[i] = projectiles[i].id;
             originX[i] = Utility::wrapWorldX(
                 renderedMuzzleX + cosf(renderedAngle) * BLUETOOTH_REMOTE_BULLET_FIRST_SEEN_FORWARD,
                 worldHalfW,
@@ -1097,6 +1136,7 @@ GameSession::SimulationSnapshot GameSession::captureSimulationSnapshot() const {
     snapshot.bluePlane.impactEffectY = player_.impactEffectY;
     snapshot.bluePlane.hp = player_.hp;
     snapshot.bluePlane.score = player_.score;
+    snapshot.bluePlane.lastResolvedProjectileId = player_.lastResolvedProjectileId;
     snapshot.bluePlane.isAlive = player_.isAlive;
     snapshot.bluePlane.grounded = player_.grounded;
     snapshot.bluePlane.exploding = player_.exploding;
@@ -1114,29 +1154,34 @@ GameSession::SimulationSnapshot GameSession::captureSimulationSnapshot() const {
     snapshot.redPlane.impactEffectY = enemy_.impactEffectY;
     snapshot.redPlane.hp = enemy_.hp;
     snapshot.redPlane.score = enemy_.score;
+    snapshot.redPlane.lastResolvedProjectileId = enemy_.lastResolvedProjectileId;
     snapshot.redPlane.isAlive = enemy_.isAlive;
     snapshot.redPlane.grounded = enemy_.grounded;
     snapshot.redPlane.exploding = enemy_.exploding;
 
     const auto &blueProjectiles = playerBullets_.getProjectiles();
     for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        snapshot.blueProjectiles[i].id = blueProjectiles[i].id;
         snapshot.blueProjectiles[i].x = blueProjectiles[i].x;
         snapshot.blueProjectiles[i].y = blueProjectiles[i].y;
         snapshot.blueProjectiles[i].velX = blueProjectiles[i].velX;
         snapshot.blueProjectiles[i].velY = blueProjectiles[i].velY;
         snapshot.blueProjectiles[i].lifetime = blueProjectiles[i].lifetime;
         snapshot.blueProjectiles[i].spawnedByInputSequence = blueProjectiles[i].spawnedByInputSequence;
+        snapshot.blueProjectiles[i].predictedRemoteImpact = blueProjectiles[i].predictedRemoteImpact;
         snapshot.blueProjectiles[i].active = blueProjectiles[i].active;
     }
 
     const auto &redProjectiles = enemyBullets_.getProjectiles();
     for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        snapshot.redProjectiles[i].id = redProjectiles[i].id;
         snapshot.redProjectiles[i].x = redProjectiles[i].x;
         snapshot.redProjectiles[i].y = redProjectiles[i].y;
         snapshot.redProjectiles[i].velX = redProjectiles[i].velX;
         snapshot.redProjectiles[i].velY = redProjectiles[i].velY;
         snapshot.redProjectiles[i].lifetime = redProjectiles[i].lifetime;
         snapshot.redProjectiles[i].spawnedByInputSequence = redProjectiles[i].spawnedByInputSequence;
+        snapshot.redProjectiles[i].predictedRemoteImpact = redProjectiles[i].predictedRemoteImpact;
         snapshot.redProjectiles[i].active = redProjectiles[i].active;
     }
 
@@ -1161,6 +1206,7 @@ void GameSession::restoreSimulationSnapshot(const SimulationSnapshot &snapshot) 
     player_.impactEffectY = snapshot.bluePlane.impactEffectY;
     player_.hp = snapshot.bluePlane.hp;
     player_.score = snapshot.bluePlane.score;
+    player_.lastResolvedProjectileId = snapshot.bluePlane.lastResolvedProjectileId;
     player_.isAlive = snapshot.bluePlane.isAlive;
     player_.grounded = snapshot.bluePlane.grounded;
     player_.exploding = snapshot.bluePlane.exploding;
@@ -1179,6 +1225,7 @@ void GameSession::restoreSimulationSnapshot(const SimulationSnapshot &snapshot) 
     enemy_.impactEffectY = snapshot.redPlane.impactEffectY;
     enemy_.hp = snapshot.redPlane.hp;
     enemy_.score = snapshot.redPlane.score;
+    enemy_.lastResolvedProjectileId = snapshot.redPlane.lastResolvedProjectileId;
     enemy_.isAlive = snapshot.redPlane.isAlive;
     enemy_.grounded = snapshot.redPlane.grounded;
     enemy_.exploding = snapshot.redPlane.exploding;
@@ -1186,12 +1233,14 @@ void GameSession::restoreSimulationSnapshot(const SimulationSnapshot &snapshot) 
 
     auto &blueProjectiles = playerBullets_.getProjectiles();
     for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        blueProjectiles[i].id = snapshot.blueProjectiles[i].id;
         blueProjectiles[i].x = snapshot.blueProjectiles[i].x;
         blueProjectiles[i].y = snapshot.blueProjectiles[i].y;
         blueProjectiles[i].velX = snapshot.blueProjectiles[i].velX;
         blueProjectiles[i].velY = snapshot.blueProjectiles[i].velY;
         blueProjectiles[i].lifetime = snapshot.blueProjectiles[i].lifetime;
         blueProjectiles[i].spawnedByInputSequence = snapshot.blueProjectiles[i].spawnedByInputSequence;
+        blueProjectiles[i].predictedRemoteImpact = snapshot.blueProjectiles[i].predictedRemoteImpact;
         blueProjectiles[i].active = snapshot.blueProjectiles[i].active;
         blueProjectiles[i].sprite.visible = snapshot.blueProjectiles[i].active;
         blueProjectiles[i].sprite.x = snapshot.blueProjectiles[i].x;
@@ -1200,12 +1249,14 @@ void GameSession::restoreSimulationSnapshot(const SimulationSnapshot &snapshot) 
 
     auto &redProjectiles = enemyBullets_.getProjectiles();
     for (int i = 0; i < MAX_PROJECTILES; ++i) {
+        redProjectiles[i].id = snapshot.redProjectiles[i].id;
         redProjectiles[i].x = snapshot.redProjectiles[i].x;
         redProjectiles[i].y = snapshot.redProjectiles[i].y;
         redProjectiles[i].velX = snapshot.redProjectiles[i].velX;
         redProjectiles[i].velY = snapshot.redProjectiles[i].velY;
         redProjectiles[i].lifetime = snapshot.redProjectiles[i].lifetime;
         redProjectiles[i].spawnedByInputSequence = snapshot.redProjectiles[i].spawnedByInputSequence;
+        redProjectiles[i].predictedRemoteImpact = snapshot.redProjectiles[i].predictedRemoteImpact;
         redProjectiles[i].active = snapshot.redProjectiles[i].active;
         redProjectiles[i].sprite.visible = snapshot.redProjectiles[i].active;
         redProjectiles[i].sprite.x = snapshot.redProjectiles[i].x;
@@ -1291,6 +1342,7 @@ void GameSession::applyPlaneState(Plane &plane, const BluetoothPlaneState &state
     plane.explosionTimer = state.explosionTimer;
     plane.hp = state.hp;
     plane.score = state.score;
+    plane.lastResolvedProjectileId = state.lastResolvedProjectileId;
     plane.isAlive = state.isAlive;
     plane.grounded = state.grounded;
     plane.exploding = state.exploding;
@@ -1337,6 +1389,7 @@ void GameSession::applyAuthoritativePlaneFields(Plane &plane, const BluetoothPla
     plane.explosionTimer = state.explosionTimer;
     plane.hp = state.hp;
     plane.score = state.score;
+    plane.lastResolvedProjectileId = state.lastResolvedProjectileId;
     plane.isAlive = state.isAlive;
     plane.exploding = state.exploding;
     if (plane.exploding) {
@@ -1344,6 +1397,19 @@ void GameSession::applyAuthoritativePlaneFields(Plane &plane, const BluetoothPla
         plane.impactEffectTimer = 0.f;
     }
     syncPlaneSprite(plane);
+}
+
+void GameSession::applyAuthoritativeHitConfirmation(
+    Plane &plane,
+    const BluetoothPlaneState &state,
+    ProjectilePool &ownedProjectiles
+) {
+    if (state.lastResolvedProjectileId == 0
+        || plane.lastResolvedProjectileId == state.lastResolvedProjectileId) {
+        return;
+    }
+
+    consumeProjectileById(ownedProjectiles, state.lastResolvedProjectileId);
 }
 
 void GameSession::applyLocalPlaneRenderSmoothing(Plane &plane, float dt) {
@@ -1467,12 +1533,114 @@ void GameSession::reconcilePredictedLocalPlane(
     plane.explosionTimer = reconciledPlane.explosionTimer;
     plane.hp = reconciledPlane.hp;
     plane.score = reconciledPlane.score;
+    plane.lastResolvedProjectileId = reconciledPlane.lastResolvedProjectileId;
     plane.isAlive = reconciledPlane.isAlive;
     plane.grounded = reconciledPlane.grounded;
     plane.exploding = reconciledPlane.exploding;
     plane.damageEffectTimer = preservedDamageEffectTimer;
     localPlaneRenderSmoothing_ = {};
     syncPlaneSprite(plane);
+}
+
+void GameSession::deactivateProjectile(Projectile &projectile) {
+    projectile.id = 0;
+    projectile.active = false;
+    projectile.velX = 0.f;
+    projectile.velY = 0.f;
+    projectile.lifetime = 0.f;
+    projectile.spawnedByInputSequence = 0;
+    projectile.predictedRemoteImpact = false;
+    projectile.sprite.visible = false;
+}
+
+void GameSession::consumeProjectileById(ProjectilePool &pool, uint16_t projectileId) {
+    if (projectileId == 0) {
+        return;
+    }
+
+    for (auto &projectile : pool.getProjectiles()) {
+        if (!projectile.active || projectile.id != projectileId) {
+            continue;
+        }
+
+        deactivateProjectile(projectile);
+        return;
+    }
+}
+
+void GameSession::rememberConsumedRemoteProjectile(uint16_t projectileId) {
+    if (projectileId == 0 || isRemoteProjectileConsumed(projectileId)) {
+        return;
+    }
+
+    consumedRemoteProjectileIds_.push_back(projectileId);
+    while (consumedRemoteProjectileIds_.size() > 96) {
+        consumedRemoteProjectileIds_.pop_front();
+    }
+}
+
+bool GameSession::isRemoteProjectileConsumed(uint16_t projectileId) const {
+    if (projectileId == 0) {
+        return false;
+    }
+
+    return std::find(
+        consumedRemoteProjectileIds_.begin(),
+        consumedRemoteProjectileIds_.end(),
+        projectileId
+    ) != consumedRemoteProjectileIds_.end();
+}
+
+void GameSession::checkBluetoothLocalAuthoritativeCollisions(bool emitAudio) {
+    Plane &localPlane = localControlsBlue_ ? player_ : enemy_;
+    Plane &remotePlane = localControlsBlue_ ? enemy_ : player_;
+    ProjectilePool &remoteBullets = localControlsBlue_ ? enemyBullets_ : playerBullets_;
+
+    if (localPlane.isAlive && !localPlane.exploding && !localPlane.isInvulnerable()) {
+        for (auto &projectile : remoteBullets.getProjectiles()) {
+            if (!projectile.active || isRemoteProjectileConsumed(projectile.id)) {
+                continue;
+            }
+            if (!projectileHitsPlane(projectile, localPlane)) {
+                continue;
+            }
+
+            localPlane.lastResolvedProjectileId = projectile.id;
+            localPlane.triggerImpactEffect(projectile.x, projectile.y);
+            rememberConsumedRemoteProjectile(projectile.id);
+            deactivateProjectile(projectile);
+            if (localPlane.hitPlane()) {
+                remotePlane.score++;
+                if (emitAudio) {
+                    sound_.playExplosion();
+                }
+            } else if (emitAudio) {
+                sound_.playHit();
+            }
+            break;
+        }
+    }
+
+    if (localPlane.isAlive
+        && !localPlane.exploding
+        && !localPlane.isInvulnerable()
+        && Utility::aabbOverlap(localPlane.x, localPlane.y, PLANE_HALF_W, PLANE_HALF_H,
+                                HOUSE_X, GROUND_Y + 0.283f, 0.45f, 0.283f)) {
+        localPlane.triggerExplosion();
+        remotePlane.score++;
+        if (emitAudio) {
+            sound_.playExplosion();
+        }
+    }
+
+    if (localPlane.isAlive && !localPlane.exploding && !localPlane.isInvulnerable()
+        && !localPlane.grounded && localPlane.y <= GROUND_Y) {
+        localPlane.triggerExplosion();
+        remotePlane.score++;
+        if (emitAudio) {
+            sound_.playExplosion();
+        }
+    }
 }
 
 void GameSession::predictBluetoothClientEffects() {
@@ -1503,15 +1671,10 @@ void GameSession::predictBluetoothClientEffects() {
     }
 
     for (auto &projectile : localBullets.getProjectiles()) {
-        if (!projectile.active) continue;
+        if (!projectile.active || projectile.predictedRemoteImpact) continue;
         if (!projectileHitsPlane(projectile, remotePlane)) continue;
 
-        projectile.active = false;
-        projectile.sprite.visible = false;
-        projectile.velX = 0.f;
-        projectile.velY = 0.f;
-        projectile.lifetime = 0.f;
-        projectile.spawnedByInputSequence = 0;
+        projectile.predictedRemoteImpact = true;
         remotePlane.triggerImpactEffect(projectile.x, projectile.y);
         if (remotePlane.hp <= 1 && !remotePlane.hasPredictedExplosion()) {
             remotePlane.triggerPredictedExplosion();
@@ -1524,7 +1687,7 @@ void GameSession::predictBluetoothClientEffects() {
 }
 
 void GameSession::pushBufferedSnapshot(const BluetoothMatchState &state) {
-    const float offsetSample = std::max(0.f, clientClock_ - state.hostTimestamp);
+    const float offsetSample = std::max(0.f, clientClock_ - state.simulationTimestamp);
     if (!hasHostClockOffset_) {
         hostToLocalClockOffset_ = offsetSample;
         hasHostClockOffset_ = true;
@@ -1535,7 +1698,7 @@ void GameSession::pushBufferedSnapshot(const BluetoothMatchState &state) {
     }
 
     if (!snapshotBuffer_.empty()
-        && state.hostTimestamp <= snapshotBuffer_.back().state.hostTimestamp) {
+        && state.simulationTimestamp <= snapshotBuffer_.back().state.simulationTimestamp) {
         snapshotBuffer_.back() = BufferedMatchSnapshot{state, clientClock_};
         return;
     }
@@ -1543,7 +1706,7 @@ void GameSession::pushBufferedSnapshot(const BluetoothMatchState &state) {
     if (!snapshotBuffer_.empty()) {
         const float hostInterval = std::max(
             0.0001f,
-            state.hostTimestamp - snapshotBuffer_.back().state.hostTimestamp
+            state.simulationTimestamp - snapshotBuffer_.back().state.simulationTimestamp
         );
         const float arrivalInterval = std::max(0.f, clientClock_ - snapshotBuffer_.back().receivedAt);
         smoothedSnapshotInterval_ = lerpFloat(smoothedSnapshotInterval_, hostInterval, 0.18f);
@@ -1579,9 +1742,9 @@ bool GameSession::sampleBufferedSnapshot(BluetoothMatchState &outState) const {
         const float worldHalfW = worldHalfWidthForAspect(aspect_);
         const float estimatedHostNow = hasHostClockOffset_
                                        ? (clientClock_ - hostToLocalClockOffset_)
-                                       : snapshotBuffer_.front().state.hostTimestamp;
+                                       : snapshotBuffer_.front().state.simulationTimestamp;
         const float extrapolationDt = std::min(
-            std::max(0.f, estimatedHostNow - snapshotBuffer_.front().state.hostTimestamp),
+            std::max(0.f, estimatedHostNow - snapshotBuffer_.front().state.simulationTimestamp),
             CLIENT_REMOTE_EXTRAPOLATION_MAX
         );
         outState.bluePlane = extrapolatePlaneState(outState.bluePlane, extrapolationDt, worldHalfW);
@@ -1591,24 +1754,24 @@ bool GameSession::sampleBufferedSnapshot(BluetoothMatchState &outState) const {
 
     const float estimatedHostNow = hasHostClockOffset_
                                    ? (clientClock_ - hostToLocalClockOffset_)
-                                   : snapshotBuffer_.back().state.hostTimestamp;
+                                   : snapshotBuffer_.back().state.simulationTimestamp;
     const float renderTime = estimatedHostNow - currentInterpolationDelay();
     const float worldHalfW = worldHalfWidthForAspect(aspect_);
     const BufferedMatchSnapshot *older = &snapshotBuffer_.front();
     const BufferedMatchSnapshot *newer = &snapshotBuffer_.back();
 
     for (size_t i = 1; i < snapshotBuffer_.size(); ++i) {
-        if (snapshotBuffer_[i].state.hostTimestamp >= renderTime) {
+        if (snapshotBuffer_[i].state.simulationTimestamp >= renderTime) {
             older = &snapshotBuffer_[i - 1];
             newer = &snapshotBuffer_[i];
             break;
         }
     }
 
-    if (renderTime >= snapshotBuffer_.back().state.hostTimestamp) {
+    if (renderTime >= snapshotBuffer_.back().state.simulationTimestamp) {
         outState = snapshotBuffer_.back().state;
         const float extrapolationDt = std::min(
-            renderTime - snapshotBuffer_.back().state.hostTimestamp,
+            renderTime - snapshotBuffer_.back().state.simulationTimestamp,
             CLIENT_REMOTE_EXTRAPOLATION_MAX
         );
         outState.bluePlane = extrapolatePlaneState(outState.bluePlane, extrapolationDt, worldHalfW);
@@ -1616,13 +1779,13 @@ bool GameSession::sampleBufferedSnapshot(BluetoothMatchState &outState) const {
         return true;
     }
 
-    if (renderTime <= snapshotBuffer_.front().state.hostTimestamp) {
+    if (renderTime <= snapshotBuffer_.front().state.simulationTimestamp) {
         outState = snapshotBuffer_.front().state;
         return true;
     }
 
-    const float span = std::max(0.0001f, newer->state.hostTimestamp - older->state.hostTimestamp);
-    const float alpha = std::clamp((renderTime - older->state.hostTimestamp) / span, 0.f, 1.f);
+    const float span = std::max(0.0001f, newer->state.simulationTimestamp - older->state.simulationTimestamp);
+    const float alpha = std::clamp((renderTime - older->state.simulationTimestamp) / span, 0.f, 1.f);
     outState = newer->state;
     outState.bluePlane = interpolatePlaneState(older->state.bluePlane, newer->state.bluePlane, alpha, worldHalfW);
     outState.redPlane = interpolatePlaneState(older->state.redPlane, newer->state.redPlane, alpha, worldHalfW);
@@ -1642,7 +1805,7 @@ bool GameSession::sampleBufferedSnapshot(BluetoothMatchState &outState) const {
 }
 
 void GameSession::pushRemoteOwnedSnapshot(const BluetoothMatchState &state) {
-    const float offsetSample = std::max(0.f, simulationTime_ - state.hostTimestamp);
+    const float offsetSample = std::max(0.f, simulationTime_ - state.simulationTimestamp);
     if (!hasRemoteOwnedClockOffset_) {
         remoteOwnedClockOffset_ = offsetSample;
         hasRemoteOwnedClockOffset_ = true;
@@ -1653,7 +1816,7 @@ void GameSession::pushRemoteOwnedSnapshot(const BluetoothMatchState &state) {
     }
 
     if (!remoteOwnedSnapshotBuffer_.empty()
-        && state.hostTimestamp <= remoteOwnedSnapshotBuffer_.back().state.hostTimestamp) {
+        && state.simulationTimestamp <= remoteOwnedSnapshotBuffer_.back().state.simulationTimestamp) {
         remoteOwnedSnapshotBuffer_.back() = BufferedMatchSnapshot{state, simulationTime_};
         return;
     }
@@ -1661,7 +1824,7 @@ void GameSession::pushRemoteOwnedSnapshot(const BluetoothMatchState &state) {
     if (!remoteOwnedSnapshotBuffer_.empty()) {
         const float remoteInterval = std::max(
             0.0001f,
-            state.hostTimestamp - remoteOwnedSnapshotBuffer_.back().state.hostTimestamp
+            state.simulationTimestamp - remoteOwnedSnapshotBuffer_.back().state.simulationTimestamp
         );
         const float arrivalInterval = std::max(
             0.f,
@@ -1691,9 +1854,9 @@ bool GameSession::sampleRemoteOwnedSnapshot(BluetoothMatchState &outState) const
         const float worldHalfW = worldHalfWidthForAspect(aspect_);
         const float estimatedRemoteNow = hasRemoteOwnedClockOffset_
                                          ? (simulationTime_ - remoteOwnedClockOffset_)
-                                         : remoteOwnedSnapshotBuffer_.front().state.hostTimestamp;
+                                         : remoteOwnedSnapshotBuffer_.front().state.simulationTimestamp;
         const float extrapolationDt = std::min(
-            std::max(0.f, estimatedRemoteNow - remoteOwnedSnapshotBuffer_.front().state.hostTimestamp),
+            std::max(0.f, estimatedRemoteNow - remoteOwnedSnapshotBuffer_.front().state.simulationTimestamp),
             REMOTE_OWNED_EXTRAPOLATION_MAX
         );
         outState.redPlane = extrapolatePlaneState(outState.redPlane, extrapolationDt, worldHalfW);
@@ -1702,37 +1865,37 @@ bool GameSession::sampleRemoteOwnedSnapshot(BluetoothMatchState &outState) const
 
     const float estimatedRemoteNow = hasRemoteOwnedClockOffset_
                                      ? (simulationTime_ - remoteOwnedClockOffset_)
-                                     : remoteOwnedSnapshotBuffer_.back().state.hostTimestamp;
+                                     : remoteOwnedSnapshotBuffer_.back().state.simulationTimestamp;
     const float renderTime = estimatedRemoteNow - currentRemoteOwnedInterpolationDelay();
     const float worldHalfW = worldHalfWidthForAspect(aspect_);
     const BufferedMatchSnapshot *older = &remoteOwnedSnapshotBuffer_.front();
     const BufferedMatchSnapshot *newer = &remoteOwnedSnapshotBuffer_.back();
 
     for (size_t i = 1; i < remoteOwnedSnapshotBuffer_.size(); ++i) {
-        if (remoteOwnedSnapshotBuffer_[i].state.hostTimestamp >= renderTime) {
+        if (remoteOwnedSnapshotBuffer_[i].state.simulationTimestamp >= renderTime) {
             older = &remoteOwnedSnapshotBuffer_[i - 1];
             newer = &remoteOwnedSnapshotBuffer_[i];
             break;
         }
     }
 
-    if (renderTime >= remoteOwnedSnapshotBuffer_.back().state.hostTimestamp) {
+    if (renderTime >= remoteOwnedSnapshotBuffer_.back().state.simulationTimestamp) {
         outState = remoteOwnedSnapshotBuffer_.back().state;
         const float extrapolationDt = std::min(
-            renderTime - remoteOwnedSnapshotBuffer_.back().state.hostTimestamp,
+            renderTime - remoteOwnedSnapshotBuffer_.back().state.simulationTimestamp,
             REMOTE_OWNED_EXTRAPOLATION_MAX
         );
         outState.redPlane = extrapolatePlaneState(outState.redPlane, extrapolationDt, worldHalfW);
         return true;
     }
 
-    if (renderTime <= remoteOwnedSnapshotBuffer_.front().state.hostTimestamp) {
+    if (renderTime <= remoteOwnedSnapshotBuffer_.front().state.simulationTimestamp) {
         outState = remoteOwnedSnapshotBuffer_.front().state;
         return true;
     }
 
-    const float span = std::max(0.0001f, newer->state.hostTimestamp - older->state.hostTimestamp);
-    const float alpha = std::clamp((renderTime - older->state.hostTimestamp) / span, 0.f, 1.f);
+    const float span = std::max(0.0001f, newer->state.simulationTimestamp - older->state.simulationTimestamp);
+    const float alpha = std::clamp((renderTime - older->state.simulationTimestamp) / span, 0.f, 1.f);
     outState = newer->state;
     outState.redPlane = interpolatePlaneState(older->state.redPlane, newer->state.redPlane, alpha, worldHalfW);
     outState.redProjectiles = interpolateProjectileState(
@@ -1749,23 +1912,43 @@ void GameSession::captureProjectiles(const ProjectilePool &pool, BluetoothProjec
     const auto &projectiles = pool.getProjectiles();
     for (const auto &projectile : projectiles) {
         if (!projectile.active || outState.count >= MAX_PROJECTILES) continue;
+        outState.id[outState.count] = projectile.id;
         outState.x[outState.count] = projectile.x;
         outState.y[outState.count] = projectile.y;
         outState.count++;
     }
 }
 
-void GameSession::applyProjectiles(ProjectilePool &pool, const BluetoothProjectileState &state, float dt, bool smooth) {
+void GameSession::applyProjectiles(
+    ProjectilePool &pool,
+    const BluetoothProjectileState &state,
+    float dt,
+    bool smooth,
+    bool ignoreConsumedProjectiles
+) {
     auto &projectiles = pool.getProjectiles();
     const float worldHalfW = worldHalfWidthForAspect(aspect_);
     const float alpha = smoothingAlpha(CLIENT_PROJECTILE_SMOOTHING, dt);
     for (int i = 0; i < MAX_PROJECTILES; ++i) {
-        const bool active = i < state.count;
+        const bool active = i < state.count
+                            && (!ignoreConsumedProjectiles || !isRemoteProjectileConsumed(state.id[i]));
         const bool wasActive = projectiles[i].active;
-        projectiles[i].active = active;
-        projectiles[i].sprite.visible = active;
-        if (!active) continue;
-        if (!smooth || !wasActive
+        if (!active) {
+            deactivateProjectile(projectiles[i]);
+            continue;
+        }
+
+        const bool projectileChanged = !wasActive || projectiles[i].id != state.id[i];
+        projectiles[i].id = state.id[i];
+        projectiles[i].active = true;
+        projectiles[i].predictedRemoteImpact = false;
+        projectiles[i].sprite.visible = true;
+        if (projectileChanged) {
+            projectiles[i].lifetime = BULLET_LIFETIME;
+            projectiles[i].velX = 0.f;
+            projectiles[i].velY = 0.f;
+        }
+        if (!smooth || projectileChanged
             || fabsf(shortestWrappedDx(projectiles[i].x, state.x[i], worldHalfW)) > 1.2f
             || fabsf(projectiles[i].y - state.y[i]) > 0.8f) {
             projectiles[i].x = state.x[i];
@@ -1803,17 +1986,14 @@ void GameSession::reconcileLocalProjectiles(
 
         if (!authoritativeActive) {
             if (!awaitingShotAck) {
-                projectile.active = false;
-                projectile.velX = 0.f;
-                projectile.velY = 0.f;
-                projectile.lifetime = 0.f;
-                projectile.spawnedByInputSequence = 0;
-                projectile.sprite.visible = false;
+                deactivateProjectile(projectile);
             }
             continue;
         }
 
+        projectile.id = state.id[i];
         projectile.active = true;
+        projectile.predictedRemoteImpact = false;
         projectile.sprite.visible = true;
         if (fabsf(projectile.velX) < 0.001f && fabsf(projectile.velY) < 0.001f) {
             projectile.velX = cosf(firingPlane.angle) * BULLET_SPEED;
@@ -1858,8 +2038,7 @@ void GameSession::checkCollisions(bool emitAudio) {
             if (!p.active) continue;
             if (Utility::aabbOverlap(p.x, p.y, BULLET_HALF_SIZE, BULLET_HALF_SIZE,
                                      enemy_.x, enemy_.y, PLANE_HALF_W, PLANE_HALF_H)) {
-                p.active = false;
-                p.sprite.visible = false;
+                deactivateProjectile(p);
                 if (enemy_.hitPlane()) {
                     player_.score++;
                     if (emitAudio) {
@@ -1880,8 +2059,7 @@ void GameSession::checkCollisions(bool emitAudio) {
             if (!p.active) continue;
             if (Utility::aabbOverlap(p.x, p.y, BULLET_HALF_SIZE, BULLET_HALF_SIZE,
                                      player_.x, player_.y, PLANE_HALF_W, PLANE_HALF_H)) {
-                p.active = false;
-                p.sprite.visible = false;
+                deactivateProjectile(p);
                 if (player_.hitPlane()) {
                     enemy_.score++;
                     if (emitAudio) {
@@ -1941,11 +2119,14 @@ void GameSession::checkCollisions(bool emitAudio) {
 }
 
 void GameSession::playerFire(uint16_t spawnedByInputSequence, bool emitAudio) {
+    const uint16_t projectileId = static_cast<uint16_t>(nextProjectileId_ + 1);
+    nextProjectileId_ = projectileId;
     spawnProjectileFromPlane(
         playerBullets_,
         player_,
         worldHalfWidthForAspect(aspect_),
-        spawnedByInputSequence
+        spawnedByInputSequence,
+        projectileId
     );
     if (emitAudio) {
         sound_.playShoot();
@@ -1953,11 +2134,14 @@ void GameSession::playerFire(uint16_t spawnedByInputSequence, bool emitAudio) {
 }
 
 void GameSession::enemyFire(uint16_t spawnedByInputSequence, bool emitAudio) {
+    const uint16_t projectileId = static_cast<uint16_t>(nextProjectileId_ + 1);
+    nextProjectileId_ = projectileId;
     spawnProjectileFromPlane(
         enemyBullets_,
         enemy_,
         worldHalfWidthForAspect(aspect_),
-        spawnedByInputSequence
+        spawnedByInputSequence,
+        projectileId
     );
     if (emitAudio) {
         sound_.playShoot();
