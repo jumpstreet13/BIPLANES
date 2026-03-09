@@ -1,5 +1,5 @@
-#ifndef BYPLANES_HUD_H
-#define BYPLANES_HUD_H
+#ifndef BIPLANES_HUD_H
+#define BIPLANES_HUD_H
 
 #include <memory>
 #include "Sprite.h"
@@ -25,4 +25,4 @@ private:
     int p2Score_ = 0;
 };
 
-#endif //BYPLANES_HUD_H
+#endif //BIPLANES_HUD_H

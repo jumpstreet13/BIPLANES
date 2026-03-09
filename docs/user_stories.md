@@ -1,4 +1,4 @@
-# ByPlanes — User Stories
+# BIPLANES — User Stories
 
 ## US-01: Main Menu
 

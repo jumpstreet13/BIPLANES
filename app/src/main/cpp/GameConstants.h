@@ -1,5 +1,5 @@
-#ifndef BYPLANES_GAMECONSTANTS_H
-#define BYPLANES_GAMECONSTANTS_H
+#ifndef BIPLANES_GAMECONSTANTS_H
+#define BIPLANES_GAMECONSTANTS_H
 
 constexpr float PLANE_SPEED    = 2.5f;   // constant speed, world units/s
 constexpr float ROTATION_SPEED = 2.8f;   // rotation speed, radians/s
