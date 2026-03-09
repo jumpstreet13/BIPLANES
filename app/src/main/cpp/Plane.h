@@ -65,6 +65,7 @@ struct Plane {
     void updatePredictedEffects(float dt);
     bool hasPredictedExplosion() const { return predictedExplosionTimer > 0.f; }
     void draw(const Shader& shader) const;
+    void drawAt(const Shader& shader, float renderX, float renderY, float renderAngle) const;
 
     // Set up for ground start (player only)
     void setGrounded();

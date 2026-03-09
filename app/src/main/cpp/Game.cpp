@@ -596,6 +596,10 @@ void Game::update(float dt) {
                 }
 
                 session_.processBluetoothRollbackCorrections();
+                session_.setBluetoothRemoteRenderAlpha(
+                    bluetoothSimulationAccumulator_ / BLUETOOTH_SIMULATION_STEP
+                );
+                session_.updateBluetoothRemoteRender(dt);
                 gameOver = gameOver || session_.getWinner() != 0;
             } else {
                 gameOver = session_.update(dt, touch);

@@ -33,6 +33,11 @@ constexpr size_t CLIENT_SNAPSHOT_HISTORY_LIMIT = 32;
 constexpr size_t ROLLBACK_HISTORY_LIMIT = 240;
 constexpr uint8_t REMOTE_PREDICTION_HOLD_FRAMES = 3;
 constexpr float PROJECTILE_MUZZLE_OFFSET = PLANE_HALF_W + BULLET_HALF_SIZE * 1.4f;
+constexpr int BLUETOOTH_REMOTE_RENDER_DELAY_STEPS = 3;
+constexpr float BLUETOOTH_REMOTE_RENDER_SNAP_X = 0.9f;
+constexpr float BLUETOOTH_REMOTE_RENDER_SNAP_Y = 0.6f;
+constexpr size_t BLUETOOTH_REMOTE_RENDER_HISTORY_LIMIT = 8;
+constexpr float BLUETOOTH_REMOTE_RENDER_FOLLOW_SPEED = 9.f;
 
 float normalizeAngle(float angle) {
     while (angle > static_cast<float>(M_PI)) angle -= 2.f * static_cast<float>(M_PI);
@@ -325,6 +330,8 @@ void GameSession::init(AAssetManager *assetManager, float aspect, GameMode mode,
     remoteOwnedSnapshotInterval_ = 1.f / 60.f;
     remoteOwnedSnapshotJitter_ = 0.01f;
     simulationTime_ = 0.f;
+    bluetoothRemoteRenderAlpha_ = 1.f;
+    resetRemotePlaneRenderState();
 }
 
 bool GameSession::update(float dt, const TouchState &input) {
@@ -486,6 +493,7 @@ bool GameSession::updateBluetoothRollback(float dt, const BluetoothInputState &l
     });
 
     simulateBluetoothRollbackFrame(dt, localInput, remoteInput, true);
+    advanceRemotePlaneRenderSample();
 
     trimRollbackHistory();
     background_.update(dt);
@@ -542,13 +550,22 @@ void GameSession::processBluetoothRollbackCorrections() {
 
     rebuildRollbackFrom(pendingRollbackSequence_);
     hasPendingRollbackCorrection_ = false;
+    advanceRemotePlaneRenderSample();
 }
 
 void GameSession::draw(const Shader &shader) const {
     background_.draw(shader);
     hud_.draw(shader);
-    player_.draw(shader);
-    enemy_.draw(shader);
+    if (mode_ == GameMode::VsBluetooth && !localControlsBlue_) {
+        drawRemotePlane(shader, player_);
+    } else {
+        player_.draw(shader);
+    }
+    if (mode_ == GameMode::VsBluetooth && localControlsBlue_) {
+        drawRemotePlane(shader, enemy_);
+    } else {
+        enemy_.draw(shader);
+    }
     playerBullets_.drawAll(shader);
     enemyBullets_.drawAll(shader);
 }
@@ -620,6 +637,8 @@ void GameSession::reset() {
     remoteOwnedSnapshotInterval_ = 1.f / 60.f;
     remoteOwnedSnapshotJitter_ = 0.01f;
     simulationTime_ = 0.f;
+    bluetoothRemoteRenderAlpha_ = 1.f;
+    resetRemotePlaneRenderState();
 }
 
 BluetoothMatchState GameSession::buildBluetoothMatchState(uint16_t acknowledgedInputSequence) const {
@@ -657,6 +676,157 @@ void GameSession::applyBluetoothRemoteOwnedState(const BluetoothMatchState &stat
     remoteOwnedState_ = state;
     hasRemoteOwnedState_ = true;
     pushRemoteOwnedSnapshot(state);
+}
+
+void GameSession::setBluetoothRemoteRenderAlpha(float alpha) {
+    bluetoothRemoteRenderAlpha_ = std::clamp(alpha, 0.f, 1.f);
+}
+
+void GameSession::updateBluetoothRemoteRender(float dt) {
+    if (mode_ != GameMode::VsBluetooth) {
+        return;
+    }
+
+    RemotePlaneRenderSample targetSample{};
+    if (!sampleRemotePlaneRenderTarget(targetSample)) {
+        renderedRemotePlaneRenderSample_ = {};
+        return;
+    }
+
+    if (!renderedRemotePlaneRenderSample_.valid) {
+        renderedRemotePlaneRenderSample_ = targetSample;
+        return;
+    }
+
+    const float worldHalfW = worldHalfWidthForAspect(aspect_);
+    const float dx = shortestWrappedDx(
+        renderedRemotePlaneRenderSample_.x,
+        targetSample.x,
+        worldHalfW
+    );
+    const float dy = targetSample.y - renderedRemotePlaneRenderSample_.y;
+    const bool shouldSnap = renderedRemotePlaneRenderSample_.grounded != targetSample.grounded
+                            || renderedRemotePlaneRenderSample_.isAlive != targetSample.isAlive
+                            || renderedRemotePlaneRenderSample_.exploding != targetSample.exploding
+                            || fabsf(dx) > BLUETOOTH_REMOTE_RENDER_SNAP_X
+                            || fabsf(dy) > BLUETOOTH_REMOTE_RENDER_SNAP_Y;
+    if (shouldSnap) {
+        renderedRemotePlaneRenderSample_ = targetSample;
+        return;
+    }
+
+    const float alpha = smoothingAlpha(BLUETOOTH_REMOTE_RENDER_FOLLOW_SPEED, dt);
+    renderedRemotePlaneRenderSample_.x = Utility::wrapWorldX(
+        renderedRemotePlaneRenderSample_.x + dx * alpha,
+        worldHalfW,
+        PLANE_HALF_W
+    );
+    renderedRemotePlaneRenderSample_.y += dy * alpha;
+    renderedRemotePlaneRenderSample_.angle = normalizeAngle(
+        renderedRemotePlaneRenderSample_.angle
+        + shortestAngleDelta(
+            renderedRemotePlaneRenderSample_.angle,
+            targetSample.angle
+        ) * alpha
+    );
+    renderedRemotePlaneRenderSample_.grounded = targetSample.grounded;
+    renderedRemotePlaneRenderSample_.isAlive = targetSample.isAlive;
+    renderedRemotePlaneRenderSample_.exploding = targetSample.exploding;
+    renderedRemotePlaneRenderSample_.valid = true;
+}
+
+GameSession::RemotePlaneRenderSample GameSession::captureRemotePlaneRenderSample() const {
+    const Plane &remotePlane = localControlsBlue_ ? enemy_ : player_;
+    return RemotePlaneRenderSample{
+        remotePlane.x,
+        remotePlane.y,
+        remotePlane.angle,
+        remotePlane.grounded,
+        remotePlane.isAlive,
+        remotePlane.exploding,
+        true
+    };
+}
+
+bool GameSession::sampleRemotePlaneRenderTarget(RemotePlaneRenderSample &outSample) const {
+    if (remotePlaneRenderHistory_.empty()) {
+        return false;
+    }
+
+    if (remotePlaneRenderHistory_.size() == 1) {
+        outSample = remotePlaneRenderHistory_.back();
+        return true;
+    }
+
+    const size_t newestIndex = remotePlaneRenderHistory_.size() - 1;
+    const size_t delaySteps = std::min<size_t>(BLUETOOTH_REMOTE_RENDER_DELAY_STEPS, newestIndex);
+    const size_t toIndex = newestIndex - delaySteps;
+    const size_t fromIndex = toIndex > 0 ? toIndex - 1 : toIndex;
+    const RemotePlaneRenderSample &fromSample = remotePlaneRenderHistory_[fromIndex];
+    const RemotePlaneRenderSample &toSample = remotePlaneRenderHistory_[toIndex];
+
+    if (fromIndex == toIndex) {
+        outSample = toSample;
+        return true;
+    }
+
+    const float worldHalfW = worldHalfWidthForAspect(aspect_);
+    const float alpha = std::clamp(bluetoothRemoteRenderAlpha_, 0.f, 1.f);
+    outSample = toSample;
+    outSample.x = Utility::wrapWorldX(
+        fromSample.x + shortestWrappedDx(fromSample.x, toSample.x, worldHalfW) * alpha,
+        worldHalfW,
+        PLANE_HALF_W
+    );
+    outSample.y = lerpFloat(fromSample.y, toSample.y, alpha);
+    outSample.angle = normalizeAngle(
+        fromSample.angle + shortestAngleDelta(fromSample.angle, toSample.angle) * alpha
+    );
+    outSample.valid = true;
+    return true;
+}
+
+void GameSession::resetRemotePlaneRenderState() {
+    remotePlaneRenderHistory_.clear();
+    renderedRemotePlaneRenderSample_ = {};
+    if (mode_ != GameMode::VsBluetooth) {
+        return;
+    }
+
+    const RemotePlaneRenderSample sample = captureRemotePlaneRenderSample();
+    remotePlaneRenderHistory_.push_back(sample);
+    renderedRemotePlaneRenderSample_ = sample;
+}
+
+void GameSession::advanceRemotePlaneRenderSample() {
+    if (mode_ != GameMode::VsBluetooth) {
+        return;
+    }
+
+    const RemotePlaneRenderSample sample = captureRemotePlaneRenderSample();
+    if (remotePlaneRenderHistory_.empty()) {
+        remotePlaneRenderHistory_.push_back(sample);
+        return;
+    }
+
+    remotePlaneRenderHistory_.push_back(sample);
+    while (remotePlaneRenderHistory_.size() > BLUETOOTH_REMOTE_RENDER_HISTORY_LIMIT) {
+        remotePlaneRenderHistory_.pop_front();
+    }
+}
+
+void GameSession::drawRemotePlane(const Shader &shader, const Plane &plane) const {
+    if (!renderedRemotePlaneRenderSample_.valid) {
+        plane.draw(shader);
+        return;
+    }
+
+    plane.drawAt(
+        shader,
+        renderedRemotePlaneRenderSample_.x,
+        renderedRemotePlaneRenderSample_.y,
+        renderedRemotePlaneRenderSample_.angle
+    );
 }
 
 TouchState GameSession::makePlaneTouchState(bool upHeld, bool downHeld, bool fireTapped) {

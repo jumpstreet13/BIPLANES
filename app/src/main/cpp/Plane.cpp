@@ -35,6 +35,70 @@ static void updateSpriteOrientation(Sprite &spr, float angle, bool spriteFacesLe
     spr.rotation = spriteFacesLeft ? (angle - (float)M_PI) : angle;
 }
 
+static void drawPlaneSprite(
+    const Plane &plane,
+    const Shader &shader,
+    const Sprite &planeSprite,
+    float renderX,
+    float renderY
+) {
+    if (plane.exploding) {
+        drawExplosionEffect(shader, plane.explosionFrames, plane.explosionTimer, renderX, renderY);
+        return;
+    }
+    if (!plane.isAlive) return;
+
+    // Blink during invulnerability
+    if (plane.respawnTimer > 0.f) {
+        int blink = (int)(plane.respawnTimer * 10.f);
+        if (blink % 2 == 0) return;
+    }
+
+    planeSprite.draw(shader);
+
+    if (plane.predictedExplosionTimer > 0.f) {
+        drawExplosionEffect(shader, plane.explosionFrames, plane.predictedExplosionTimer, renderX, renderY);
+    }
+
+    // Damage effects
+    int damage = PLANE_MAX_HP - plane.hp;
+
+    if (damage >= 1 && plane.smokeTex) {
+        // Animated smoke from plane center (5-frame sprite sheet, each 13px wide in 65px strip)
+        int frame = ((int)(plane.damageEffectTimer * Plane::SMOKE_ANIM_SPEED)) % Plane::SMOKE_FRAMES;
+        float uvW = 1.f / (float)Plane::SMOKE_FRAMES;
+        Sprite sm;
+        sm.init(plane.smokeTex, 0.15f, 0.15f);
+        sm.x = renderX;
+        sm.y = renderY;
+        sm.uvLeft  = frame * uvW;
+        sm.uvRight = (frame + 1) * uvW;
+        sm.draw(shader);
+    }
+
+    if (damage >= 2 && plane.fireTex) {
+        // Animated fire from plane center (3-frame sprite sheet)
+        int frame = ((int)(plane.damageEffectTimer * Plane::FIRE_ANIM_SPEED)) % Plane::FIRE_FRAMES;
+        float uvW = 1.f / (float)Plane::FIRE_FRAMES;
+        Sprite fi;
+        fi.init(plane.fireTex, 0.15f, 0.15f);
+        fi.x = renderX;
+        fi.y = renderY;
+        fi.uvLeft  = frame * uvW;
+        fi.uvRight = (frame + 1) * uvW;
+        fi.draw(shader);
+    }
+
+    if (plane.impactEffectTimer > 0.f && plane.sparkTex) {
+        Sprite spark;
+        spark.init(plane.sparkTex, 0.16f, 0.16f);
+        spark.x = plane.impactEffectX;
+        spark.y = plane.impactEffectY;
+        spark.tintA = plane.impactEffectTimer / Plane::IMPACT_EFFECT_DURATION;
+        spark.draw(shader);
+    }
+}
+
 void Plane::init(std::shared_ptr<TextureAsset> texture,
                  std::shared_ptr<TextureAsset> exFrames[EXPLOSION_FRAMES],
                  std::shared_ptr<TextureAsset> smoke,
@@ -223,62 +287,13 @@ void Plane::updatePredictedEffects(float dt) {
 }
 
 void Plane::draw(const Shader& shader) const {
-    const float renderX = sprite.x;
-    const float renderY = sprite.y;
+    drawPlaneSprite(*this, shader, sprite, sprite.x, sprite.y);
+}
 
-    if (exploding) {
-        drawExplosionEffect(shader, explosionFrames, explosionTimer, renderX, renderY);
-        return;
-    }
-    if (!isAlive) return;
-
-    // Blink during invulnerability
-    if (respawnTimer > 0.f) {
-        int blink = (int)(respawnTimer * 10.f);
-        if (blink % 2 == 0) return;
-    }
-
-    sprite.draw(shader);
-
-    if (predictedExplosionTimer > 0.f) {
-        drawExplosionEffect(shader, explosionFrames, predictedExplosionTimer, renderX, renderY);
-    }
-
-    // Damage effects
-    int damage = PLANE_MAX_HP - hp;
-
-    if (damage >= 1 && smokeTex) {
-        // Animated smoke from plane center (5-frame sprite sheet, each 13px wide in 65px strip)
-        int frame = ((int)(damageEffectTimer * SMOKE_ANIM_SPEED)) % SMOKE_FRAMES;
-        float uvW = 1.f / (float)SMOKE_FRAMES; // 0.2 per frame
-        Sprite sm;
-        sm.init(smokeTex, 0.15f, 0.15f);
-        sm.x = renderX;
-        sm.y = renderY;
-        sm.uvLeft  = frame * uvW;
-        sm.uvRight = (frame + 1) * uvW;
-        sm.draw(shader);
-    }
-
-    if (damage >= 2 && fireTex) {
-        // Animated fire from plane center (3-frame sprite sheet)
-        int frame = ((int)(damageEffectTimer * FIRE_ANIM_SPEED)) % FIRE_FRAMES;
-        float uvW = 1.f / (float)FIRE_FRAMES;
-        Sprite fi;
-        fi.init(fireTex, 0.15f, 0.15f);
-        fi.x = renderX;
-        fi.y = renderY;
-        fi.uvLeft  = frame * uvW;
-        fi.uvRight = (frame + 1) * uvW;
-        fi.draw(shader);
-    }
-
-    if (impactEffectTimer > 0.f && sparkTex) {
-        Sprite spark;
-        spark.init(sparkTex, 0.16f, 0.16f);
-        spark.x = impactEffectX;
-        spark.y = impactEffectY;
-        spark.tintA = impactEffectTimer / IMPACT_EFFECT_DURATION;
-        spark.draw(shader);
-    }
+void Plane::drawAt(const Shader &shader, float renderX, float renderY, float renderAngle) const {
+    Sprite renderSprite = sprite;
+    renderSprite.x = renderX;
+    renderSprite.y = renderY;
+    updateSpriteOrientation(renderSprite, renderAngle, spawnFacingLeft);
+    drawPlaneSprite(*this, shader, renderSprite, renderX, renderY);
 }

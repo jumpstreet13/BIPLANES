@@ -29,6 +29,8 @@ public:
     BluetoothMatchState buildBluetoothMatchState(uint16_t acknowledgedInputSequence) const;
     void applyBluetoothMatchState(const BluetoothMatchState &state);
     void applyBluetoothRemoteOwnedState(const BluetoothMatchState &state);
+    void setBluetoothRemoteRenderAlpha(float alpha);
+    void updateBluetoothRemoteRender(float dt);
 
 private:
     struct PlaneSimulationState {
@@ -98,6 +100,16 @@ private:
         float angleError = 0.f;
     };
 
+    struct RemotePlaneRenderSample {
+        float x = 0.f;
+        float y = 0.f;
+        float angle = 0.f;
+        bool grounded = false;
+        bool isAlive = true;
+        bool exploding = false;
+        bool valid = false;
+    };
+
     void checkCollisions(bool emitAudio = true);
     void playerFire(uint16_t spawnedByInputSequence = 0, bool emitAudio = true);
     void enemyFire(uint16_t spawnedByInputSequence = 0, bool emitAudio = true);
@@ -132,6 +144,11 @@ private:
         uint16_t acknowledgedInputSequence,
         const Plane &firingPlane
     );
+    RemotePlaneRenderSample captureRemotePlaneRenderSample() const;
+    bool sampleRemotePlaneRenderTarget(RemotePlaneRenderSample &outSample) const;
+    void resetRemotePlaneRenderState();
+    void advanceRemotePlaneRenderSample();
+    void drawRemotePlane(const Shader &shader, const Plane &plane) const;
     void pushBufferedSnapshot(const BluetoothMatchState &state);
     bool sampleBufferedSnapshot(BluetoothMatchState &outState) const;
     float currentInterpolationDelay() const;
@@ -167,6 +184,8 @@ private:
     std::deque<PredictedInputFrame> pendingLocalInputs_;
     std::deque<BufferedMatchSnapshot> snapshotBuffer_;
     PlaneRenderSmoothingState localPlaneRenderSmoothing_{};
+    std::deque<RemotePlaneRenderSample> remotePlaneRenderHistory_;
+    RemotePlaneRenderSample renderedRemotePlaneRenderSample_{};
     float clientClock_ = 0.f;
     float hostToLocalClockOffset_ = 0.f;
     bool hasHostClockOffset_ = false;
@@ -179,6 +198,7 @@ private:
     float remoteOwnedSnapshotJitter_ = 0.01f;
     float simulationTime_ = 0.f;
     float aspect_ = 1.f;
+    float bluetoothRemoteRenderAlpha_ = 1.f;
 
     float playerFireCooldown_ = 0.f;
     float enemyFireCooldown_ = 0.f;
