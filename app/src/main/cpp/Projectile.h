@@ -1,5 +1,5 @@
-#ifndef BIPLANES_PROJECTILE_H
-#define BIPLANES_PROJECTILE_H
+#ifndef BYPLANES_PROJECTILE_H
+#define BYPLANES_PROJECTILE_H
 
 #include <array>
 #include <cstdint>
@@ -33,4 +33,4 @@ private:
     float worldHalfW_ = WORLD_HALF_W;
 };
 
-#endif //BIPLANES_PROJECTILE_H
+#endif //BYPLANES_PROJECTILE_H

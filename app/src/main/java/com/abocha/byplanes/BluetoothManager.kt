@@ -40,8 +40,8 @@ class BluetoothManager(private val activity: GameActivity) {
         private const val TAG = "BluetoothManager"
         val SERVICE_UUID: UUID = UUID.fromString("12345678-1234-1234-1234-1234567890ab")
         val ROOM_INFO_UUID: UUID = UUID.fromString("12345678-1234-1234-1234-1234567890ac")
-        const val SERVICE_NAME = "BIPLANES"
-        private const val ROOM_PREFIX = "BIPLANES:"
+        const val SERVICE_NAME = "ByPlanes"
+        private const val ROOM_PREFIX = "ByPlanes:"
         private const val REQUEST_BT_PERMISSIONS = 4017
         private const val REQUEST_BT_DISCOVERABLE = 4018
         private const val MATCH_STATE_PACKET_TYPE = 0
@@ -189,7 +189,7 @@ class BluetoothManager(private val activity: GameActivity) {
             } finally {
                 disconnect()
             }
-        }, "BIPLANESBtSendAndDisconnect").start()
+        }, "ByPlanesBtSendAndDisconnect").start()
     }
 
     fun isConnected(): Boolean = connectedSocket?.isConnected == true && running.get()
@@ -593,7 +593,7 @@ class BluetoothManager(private val activity: GameActivity) {
             if (connectionSessionId.get() == sessionId) {
                 running.set(false)
             }
-        }, "BIPLANESBtSender").start()
+        }, "ByPlanesBtSender").start()
     }
 
     private fun startReceiving(sessionId: Int) {
@@ -633,7 +633,7 @@ class BluetoothManager(private val activity: GameActivity) {
             if (connectionSessionId.get() == sessionId) {
                 running.set(false)
             }
-        }, "BIPLANESBtReceiver").start()
+        }, "ByPlanesBtReceiver").start()
     }
 
     private fun framePacket(packet: ByteArray): ByteArray {

@@ -1,5 +1,5 @@
-#ifndef BIPLANES_SPRITE_H
-#define BIPLANES_SPRITE_H
+#ifndef BYPLANES_SPRITE_H
+#define BYPLANES_SPRITE_H
 
 #include <memory>
 #include <vector>
@@ -42,4 +42,4 @@ private:
     std::vector<Index> indices_;
 };
 
-#endif //BIPLANES_SPRITE_H
+#endif //BYPLANES_SPRITE_H

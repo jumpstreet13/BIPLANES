@@ -1,5 +1,5 @@
-#ifndef BIPLANES_BACKGROUND_H
-#define BIPLANES_BACKGROUND_H
+#ifndef BYPLANES_BACKGROUND_H
+#define BYPLANES_BACKGROUND_H
 
 #include "Sprite.h"
 
@@ -21,4 +21,4 @@ private:
     float aspect_ = 1.f;
 };
 
-#endif //BIPLANES_BACKGROUND_H
+#endif //BYPLANES_BACKGROUND_H

@@ -1,4 +1,4 @@
-# BIPLANES UX Specification
+# ByPlanes UX Specification
 
 **Version:** 1.0
 **Date:** 2026-03-01

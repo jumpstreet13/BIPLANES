@@ -1,4 +1,4 @@
-# BIPLANES - UX Post-Implementation Review
+# ByPlanes - UX Post-Implementation Review
 **Date:** 2026-03-02
 **Reviewer:** UX Designer
 **Status:** Complete

@@ -1,4 +1,4 @@
-# Functional Requirements — BIPLANES
+# Functional Requirements — ByPlanes
 
 > Document version: 1.0
 > Date: 2026-03-01

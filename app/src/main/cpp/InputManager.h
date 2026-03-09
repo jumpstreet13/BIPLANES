@@ -1,5 +1,5 @@
-#ifndef BIPLANES_INPUTMANAGER_H
-#define BIPLANES_INPUTMANAGER_H
+#ifndef BYPLANES_INPUTMANAGER_H
+#define BYPLANES_INPUTMANAGER_H
 
 #include <game-activity/native_app_glue/android_native_app_glue.h>
 
@@ -31,4 +31,4 @@ private:
     float screenH_ = 0;
 };
 
-#endif //BIPLANES_INPUTMANAGER_H
+#endif //BYPLANES_INPUTMANAGER_H

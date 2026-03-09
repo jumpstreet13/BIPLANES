@@ -1,5 +1,5 @@
-#ifndef BIPLANES_SOUNDENGINE_H
-#define BIPLANES_SOUNDENGINE_H
+#ifndef BYPLANES_SOUNDENGINE_H
+#define BYPLANES_SOUNDENGINE_H
 
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>

@@ -1,4 +1,4 @@
-# BIPLANES -- Test Scenarios & Definition of Done
+# ByPlanes -- Test Scenarios & Definition of Done
 
 > Document version: 1.0
 > Date: 2026-03-01
