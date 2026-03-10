@@ -584,6 +584,9 @@ void Game::update(float dt) {
 
 void Game::render() {
     renderer_->beginFrame();
+    if (!renderer_->isReady()) {
+        return;
+    }
 
     // Splash Screen
     if (state_ == GameState::SplashScreen) {

@@ -30,6 +30,12 @@ public:
 
     void beginFrame();
     void endFrame();
+    bool isReady() const {
+        return display_ != EGL_NO_DISPLAY
+               && surface_ != EGL_NO_SURFACE
+               && context_ != EGL_NO_CONTEXT
+               && shader_ != nullptr;
+    }
 
     const Shader &getShader() const { return *shader_; }
     EGLint getWidth() const { return viewportWidth_; }
