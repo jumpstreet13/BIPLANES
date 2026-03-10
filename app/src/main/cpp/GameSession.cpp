@@ -1675,6 +1675,7 @@ void GameSession::predictBluetoothClientEffects() {
         if (!projectileHitsPlane(projectile, remotePlane)) continue;
 
         projectile.predictedRemoteImpact = true;
+        projectile.sprite.visible = false;
         remotePlane.triggerImpactEffect(projectile.x, projectile.y);
         if (remotePlane.hp <= 1 && !remotePlane.hasPredictedExplosion()) {
             remotePlane.triggerPredictedExplosion();

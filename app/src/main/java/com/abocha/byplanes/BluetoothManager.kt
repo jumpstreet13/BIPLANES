@@ -14,6 +14,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -97,6 +98,7 @@ class BluetoothManager(private val activity: GameActivity) {
     private val pendingInputPackets = ArrayDeque<ByteArray>()
 
     private var pendingPermissionAction: (() -> Unit)? = null
+    private var pendingPermissionsRequest: List<String> = emptyList()
     private var pendingDiscoverableAction: (() -> Unit)? = null
     private var hostDialog: AlertDialog? = null
     private var joinDialog: AlertDialog? = null
@@ -122,7 +124,7 @@ class BluetoothManager(private val activity: GameActivity) {
     private var joinLastEvent = "idle"
     private val restartDiscoveryRunnable = Runnable {
         if (joinDialog?.isShowing == true && !isConnected()) {
-            btAdapter?.cancelDiscovery()
+            cancelDiscoverySafely()
             joinLastEvent = "auto refresh"
             attemptStartDiscovery("auto refresh", 0)
         }
@@ -145,9 +147,15 @@ class BluetoothManager(private val activity: GameActivity) {
 
     fun startScanning() {
         activity.runOnUiThread {
-            ensureReadyForBluetooth(needsLocation = true) {
-                ensureLocationServicesEnabled {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                ensureReadyForBluetooth {
                     showJoinDialog()
+                }
+            } else {
+                ensureReadyForBluetooth(needsLocation = true) {
+                    ensureLocationServicesEnabled {
+                        showJoinDialog()
+                    }
                 }
             }
         }
@@ -245,11 +253,17 @@ class BluetoothManager(private val activity: GameActivity) {
     private fun handlePermissionsResult(requestCode: Int, grantResults: IntArray) {
         if (requestCode != REQUEST_BT_PERMISSIONS) return
         val action = pendingPermissionAction
+        val requestedPermissions = pendingPermissionsRequest
         pendingPermissionAction = null
+        pendingPermissionsRequest = emptyList()
         if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
             action?.invoke()
         } else {
-            showToast("Bluetooth permissions are required")
+            showPermissionSettingsDialog(
+                requestedPermissions.filterIndexed { index, _ ->
+                    index >= grantResults.size || grantResults[index] != PackageManager.PERMISSION_GRANTED
+                }
+            )
         }
     }
 
@@ -273,21 +287,25 @@ class BluetoothManager(private val activity: GameActivity) {
             showToast("Bluetooth is not available")
             return
         }
-        if (!adapter.isEnabled) {
-            activity.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-            showToast("Enable Bluetooth and try again")
-            return
+        ensureBluetoothPermissions(needsLocation) {
+            if (!adapter.isEnabled) {
+                activity.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                showToast("Enable Bluetooth and try again")
+                return@ensureBluetoothPermissions
+            }
+            action()
         }
-        ensureBluetoothPermissions(needsLocation, action)
     }
 
     private fun ensureBluetoothPermissions(needsLocation: Boolean, action: () -> Unit) {
         val missing = getMissingPermissions(needsLocation)
         if (missing.isEmpty()) {
+            pendingPermissionsRequest = emptyList()
             action()
             return
         }
         pendingPermissionAction = action
+        pendingPermissionsRequest = missing
         ActivityCompat.requestPermissions(activity, missing.toTypedArray(), REQUEST_BT_PERMISSIONS)
     }
 
@@ -296,21 +314,66 @@ class BluetoothManager(private val activity: GameActivity) {
             buildList {
                 addAll(
                     listOf(
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_ADVERTISE
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                        Manifest.permission.BLUETOOTH_SCAN,
+                        Manifest.permission.BLUETOOTH_ADVERTISE
                     )
                 )
+            }
+        } else {
+            buildList {
                 if (needsLocation) {
                     add(Manifest.permission.ACCESS_FINE_LOCATION)
                 }
             }
-        } else {
-            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
 
         return permissions.filter {
             ActivityCompat.checkSelfPermission(activity, it) != PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun showPermissionSettingsDialog(deniedPermissions: List<String>) {
+        val permissionTarget = formatPermissionTarget(deniedPermissions)
+        activity.runOnUiThread {
+            AlertDialog.Builder(activity)
+                .setTitle("Permission required")
+                .setMessage("Open app settings and allow $permissionTarget for Bluetooth multiplayer.")
+                .setCancelable(false)
+                .setPositiveButton("Open settings") { _, _ -> openAppSettings() }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun formatPermissionTarget(permissions: List<String>): String {
+        val labels = linkedSetOf<String>()
+        permissions.forEach { permission ->
+            when (permission) {
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE -> labels += "Nearby devices"
+                Manifest.permission.ACCESS_FINE_LOCATION -> labels += "Location"
+            }
+        }
+        if (labels.isEmpty()) {
+            labels += "the required permissions"
+        }
+        return labels.joinToString(" and ")
+    }
+
+    private fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", activity.packageName, null)
+        }
+        try {
+            activity.startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                activity.startActivity(Intent(Settings.ACTION_APPLICATION_SETTINGS))
+            } catch (_: Exception) {
+                showToast("Open app settings and allow the required permissions")
+            }
         }
     }
 
@@ -490,7 +553,7 @@ class BluetoothManager(private val activity: GameActivity) {
         showClientConnectingDialog(host.roomName)
 
         Thread {
-            btAdapter?.cancelDiscovery()
+            cancelDiscoverySafely()
             var lastError: Exception? = null
 
             for (mode in listOf(SocketMode.Insecure, SocketMode.Secure)) {
@@ -756,8 +819,8 @@ class BluetoothManager(private val activity: GameActivity) {
         }
 
         seedBondedDevices()
-        if (btAdapter?.isDiscovering == true) {
-            btAdapter?.cancelDiscovery()
+        if (isDiscoveringSafely()) {
+            cancelDiscoverySafely()
         }
         attemptStartDiscovery("initial start", 0)
     }
@@ -768,12 +831,7 @@ class BluetoothManager(private val activity: GameActivity) {
         pendingServiceChecks.clear()
         joinLastEvent = "discovery stopped"
         updateJoinDebugView()
-        try {
-            if (btAdapter?.isDiscovering == true) {
-                btAdapter?.cancelDiscovery()
-            }
-        } catch (_: Exception) {
-        }
+        cancelDiscoverySafely()
 
         val receiver = discoveryReceiver
         if (receiver != null) {
@@ -852,6 +910,11 @@ class BluetoothManager(private val activity: GameActivity) {
 
     @SuppressLint("MissingPermission")
     private fun seedBondedDevices() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            && !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        ) {
+            return
+        }
         val adapter = btAdapter ?: return
         val bondedDevices = try {
             adapter.bondedDevices.orEmpty()
@@ -956,13 +1019,29 @@ class BluetoothManager(private val activity: GameActivity) {
         val visibleDevices = discoveredHosts.size
         val pendingChecks = pendingServiceChecks.size
         val bondedVisible = discoveredHosts.count { it.isBonded }
-        val adapterEnabled = btAdapter?.isEnabled == true
-        val adapterDiscovering = btAdapter?.isDiscovering == true
-        val adapterState = bluetoothStateLabel(btAdapter?.state ?: BluetoothAdapter.STATE_OFF)
-        val adapterScanMode = bluetoothScanModeLabel(btAdapter?.scanMode ?: BluetoothAdapter.SCAN_MODE_NONE)
         val scanGranted = hasPermission(Manifest.permission.BLUETOOTH_SCAN)
         val connectGranted = hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
         val advertiseGranted = hasPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
+        val adapterEnabled = if (connectGranted || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            btAdapter?.isEnabled == true
+        } else {
+            false
+        }
+        val adapterDiscovering = if (scanGranted || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            btAdapter?.isDiscovering == true
+        } else {
+            false
+        }
+        val adapterState = if (connectGranted || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            bluetoothStateLabel(btAdapter?.state ?: BluetoothAdapter.STATE_OFF)
+        } else {
+            "permission required"
+        }
+        val adapterScanMode = if (connectGranted || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            bluetoothScanModeLabel(btAdapter?.scanMode ?: BluetoothAdapter.SCAN_MODE_NONE)
+        } else {
+            "permission required"
+        }
         val locationGranted =
             Build.VERSION.SDK_INT < Build.VERSION_CODES.S || hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
         val locationEnabled = isLocationEnabled()
@@ -1008,6 +1087,23 @@ class BluetoothManager(private val activity: GameActivity) {
     private fun attemptStartDiscovery(reason: String, attempt: Int) {
         joinDiscoveryStartAttempts = attempt + 1
         joinLastDiscoveryStarted = false
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            && !hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+        ) {
+            joinLastEvent = "scan permission missing"
+            updateJoinDebugView()
+            showToast("Nearby devices permission is required")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            && !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        ) {
+            joinLastEvent = "connect permission missing"
+            updateJoinDebugView()
+            showToast("Bluetooth connect permission is required")
+            return
+        }
 
         val adapter = btAdapter
         if (adapter == null) {
@@ -1068,6 +1164,33 @@ class BluetoothManager(private val activity: GameActivity) {
 
     private fun hasPermission(permission: String): Boolean {
         return ActivityCompat.checkSelfPermission(activity, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun isDiscoveringSafely(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            && !hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+        ) {
+            return false
+        }
+        return try {
+            btAdapter?.isDiscovering == true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun cancelDiscoverySafely() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            && !hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+        ) {
+            return
+        }
+        try {
+            btAdapter?.cancelDiscovery()
+        } catch (_: SecurityException) {
+        }
     }
 
     private fun isLocationEnabled(): Boolean {
