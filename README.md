@@ -8,7 +8,7 @@
 Reviving the legendary Java mobile dogfight game
 </p>
 
-<p align="center">
+<p align="justify">
   <img src="retro1.png" width="500">
   <img src="retro2.jpg" width="500">
   <img src="docs/as6yz1qaMjc7oNZuTz11VkWFR5j0FhU7xOWPa.gif" width="500">
@@ -29,15 +29,9 @@ Reviving the legendary Java mobile dogfight game
 
 <p align="center">
 
-<a href="https://github.com/yourusername/biplanes/releases/latest">
+<a href="https://github.com/jumpstreet13/BIPLANES/blob/main/docs/app-release.apk">
   <img src="https://img.shields.io/badge/Скачать-APK-blue?style=for-the-badge&logo=android">
 </a>
-
-</p>
-
-Скачайте последнюю версию **BIPLANES** напрямую из раздела GitHub Releases.
-
-👉 **[Скачать последнюю версию APK](https://github.com/yourusername/biplanes/releases/latest)**
 
 ---
 
@@ -113,15 +107,9 @@ Now this classic is back.
 
 <p align="center">
 
-<a href="https://github.com/yourusername/biplanes/releases/latest">
+<a href="https://github.com/jumpstreet13/BIPLANES/blob/main/docs/app-release.apk">
   <img src="https://img.shields.io/badge/Download-APK-blue?style=for-the-badge&logo=android">
 </a>
-
-</p>
-
-Download the latest version of **BIPLANES** directly from GitHub Releases.
-
-👉 **[Download Latest APK](https://github.com/yourusername/biplanes/releases/latest)**
 
 ---
 
