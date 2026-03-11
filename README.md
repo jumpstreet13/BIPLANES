@@ -8,10 +8,10 @@
 Reviving the legendary Java mobile dogfight game
 </p>
 
-<p>
-  <img src="retro1.png">
-  <img src="retro2.jpg">
-  <img src="docs/as6yz1qaMjc7oNZuTz11VkWFR5j0FhU7xOWPa.gif">
+<p align="center">
+  <img src="retro1.png" width="33%">
+  <img src="retro2.jpg" width="33%">
+  <img src="docs/as6yz1qaMjc7oNZuTz11VkWFR5j0FhU7xOWPa.gif" width="33%">
 </p>
 
 ## ✈️ Что такое BIPLANES?
