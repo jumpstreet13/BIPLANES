@@ -198,7 +198,8 @@ private:
         const BluetoothProjectileState &state,
         float dt,
         bool smooth,
-        bool ignoreConsumedProjectiles = false
+        bool ignoreConsumedProjectiles = false,
+        bool emitAudio = false
     );
 
     Plane player_;

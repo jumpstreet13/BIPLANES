@@ -423,7 +423,7 @@ bool GameSession::updateBluetoothHost(float dt, const TouchState &localInput) {
         applyAuthoritativePlaneFields(enemy_, bufferedRemoteState.redPlane);
         enemy_.score = locallyOwnedRedScore;
         syncPlaneSprite(enemy_);
-        applyProjectiles(enemyBullets_, bufferedRemoteState.redProjectiles, dt, true, true);
+        applyProjectiles(enemyBullets_, bufferedRemoteState.redProjectiles, dt, true, true, true);
     }
 
     playerBullets_.updateAll(dt);
@@ -473,7 +473,7 @@ void GameSession::updateBluetoothClient(float dt, const TouchState &localInput) 
         );
         player_.score = locallyOwnedBlueScore;
         syncPlaneSprite(player_);
-        applyProjectiles(playerBullets_, bufferedState.blueProjectiles, dt, true, true);
+        applyProjectiles(playerBullets_, bufferedState.blueProjectiles, dt, true, true, true);
     }
     checkBluetoothLocalAuthoritativeCollisions();
     predictBluetoothClientEffects();
@@ -729,7 +729,7 @@ void GameSession::applyBluetoothMatchState(const BluetoothMatchState &state) {
     enemy_.score = std::max(enemy_.score, static_cast<int>(state.redPlane.score));
     if (!clientStateInitialized_) {
         applyPlaneState(player_, state.bluePlane, 0.f, false, CLIENT_PLANE_SMOOTHING);
-        applyProjectiles(playerBullets_, state.blueProjectiles, 0.f, false, true);
+        applyProjectiles(playerBullets_, state.blueProjectiles, 0.f, false, true, false);
         hud_.setScores(player_.score, enemy_.score);
         clientStateInitialized_ = true;
         pendingLocalInputs_.clear();
@@ -1925,7 +1925,8 @@ void GameSession::applyProjectiles(
     const BluetoothProjectileState &state,
     float dt,
     bool smooth,
-    bool ignoreConsumedProjectiles
+    bool ignoreConsumedProjectiles,
+    bool emitAudio
 ) {
     auto &projectiles = pool.getProjectiles();
     const float worldHalfW = worldHalfWidthForAspect(aspect_);
@@ -1948,6 +1949,9 @@ void GameSession::applyProjectiles(
             projectiles[i].lifetime = BULLET_LIFETIME;
             projectiles[i].velX = 0.f;
             projectiles[i].velY = 0.f;
+            if (emitAudio) {
+                sound_.playShoot();
+            }
         }
         if (!smooth || projectileChanged
             || fabsf(shortestWrappedDx(projectiles[i].x, state.x[i], worldHalfW)) > 1.2f
