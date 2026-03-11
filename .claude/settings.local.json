@@ -1,0 +1,33 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew assembleDebug:*)",
+      "Bash(\"C:/Program Files/Android/Android Studio/jbr/bin/java\":*)",
+      "Bash(JAVA_HOME=\"C:/Program Files/Android/Android Studio/jbr\" PATH=\"C:/Program Files/Android/Android Studio/jbr/bin:$PATH\" ./gradlew assembleDebug:*)",
+      "Bash(xargs cat:*)",
+      "Bash(python:*)",
+      "Bash(where python:*)",
+      "Bash(pip:*)",
+      "Bash(node:*)",
+      "Bash(winget:*)",
+      "Bash(export:*)",
+      "Bash(\"C:/Program Files/Android/Android Studio/jbr/bin/java.exe\":*)",
+      "Bash(JAVA_HOME=\"C:/Program Files/Android/Android Studio1/jbr\" ./gradlew assembleDebug:*)",
+      "Bash(where:*)",
+      "Bash(python3:*)",
+      "Bash(py:*)",
+      "Bash(\"C:/Users/Igor/AppData/Local/Programs/Python/Python312/python.exe\":*)",
+      "Bash(pip3 install:*)",
+      "Bash(/c/Users/Igor/AppData/Local/Programs/Python/Python312/python.exe:*)",
+      "Bash(ls:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(jar tf:*)",
+      "Bash(\"$JAVA_HOME/bin/jar\" tf:*)",
+      "Bash(\"C:/Program Files/Android/Android Studio1/jbr/bin/jar.exe\" tf:*)",
+      "Bash(\"C:/Program Files/Android/Android Studio1/jbr/bin/javap.exe\":*)"
+    ]
+  }
+}
