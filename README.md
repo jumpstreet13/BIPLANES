@@ -9,7 +9,7 @@ Reviving the legendary Java mobile dogfight game
 </p>
 
 <p align="center">
-  <img src="assets/gameplay.gif" width="500">
+  <img src="gameplay.gif" width="500">
 </p>
 ---
 
@@ -42,10 +42,9 @@ Reviving the legendary Java mobile dogfight game
 
 ---
 
-
 ## 🎮 Геймплей
 <p align="center">
-  <img src="assets/gameplay.gif" alt="Gameplay GIF" width="500">
+  <img src="gameplay.gif" alt="Gameplay GIF" width="500">
 </p>
 
 Игроки управляют самолетами и оставляют за собой траектории движения.  
