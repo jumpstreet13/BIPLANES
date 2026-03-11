@@ -884,7 +884,7 @@ void Game::initSession() {
         auto fireBtnTex = TextureAsset::loadAsset(assetManager, "btn_fire.png");
         btnFireSprite_.init(fireBtnTex, 0.35f, 0.35f);
         btnFireSprite_.x = screenHalfW - 0.45f;
-        btnFireSprite_.y = -1.55f + 0.65f;  // above DOWN button with gap
+        btnFireSprite_.y = -1.55f + 0.82f;
 
         auto menuBtnTex = TextureAsset::loadAsset(assetManager, "button.png");
         pauseBtnSprite_.init(menuBtnTex, 0.42f, 0.16f);

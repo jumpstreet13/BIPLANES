@@ -23,13 +23,14 @@ void InputManager::processMotionEvents(
 
     // Button zones: percentage-based so they work on any screen size/DPI.
     // UP   = left 15% width, bottom 40% height
-    // DOWN = right 15% width, bottom 25% height
-    // FIRE = right 15% width, between 50% and 75% height (above DOWN)
+    // DOWN = right 18% width, bottom 24% height
+    // FIRE = right 22% width, between 40% and 68% height (higher and easier to tap)
     const float upMaxX   = screenW_ * 0.15f;
-    const float downMinX = screenW_ * 0.85f;
+    const float downMinX = screenW_ * 0.82f;
+    const float fireMinX = screenW_ * 0.78f;
     const float btnMinY  = screenH_ * 0.60f;    // UP zone starts here
-    const float fireMinY = screenH_ * 0.50f;    // FIRE zone top
-    const float fireMaxY = screenH_ * 0.75f;    // FIRE zone bottom / DOWN zone top
+    const float fireMinY = screenH_ * 0.40f;    // FIRE zone top
+    const float fireMaxY = screenH_ * 0.78f;    // FIRE zone bottom / DOWN zone top
 
     for (auto i = 0; i < buf->motionEventsCount; i++) {
         auto &motionEvent = buf->motionEvents[i];
@@ -71,7 +72,7 @@ void InputManager::processMotionEvents(
                     state_.downButtonHeld = true;
                 }
                 // FIRE zone: right side, above DOWN
-                else if (x > downMinX && y > fireMinY && y <= fireMaxY) {
+                else if (x > fireMinX && y > fireMinY && y <= fireMaxY) {
                     state_.fireTapped = true;
                 }
                 break;
