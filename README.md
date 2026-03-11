@@ -29,7 +29,7 @@ Reviving the legendary Java mobile dogfight game
 
 <p align="center">
 
-<a href="https://github.com/jumpstreet13/BIPLANES/blob/main/docs/app-release.apk">
+<a href="https://drive.google.com/file/d/1jaDhWiCZOXwsB7WZHu-jdlKrLXf5zvM4/view?usp=sharing">
   <img src="https://img.shields.io/badge/Скачать-APK-blue?style=for-the-badge&logo=android">
 </a>
 
@@ -107,7 +107,7 @@ Now this classic is back.
 
 <p align="center">
 
-<a href="https://github.com/jumpstreet13/BIPLANES/blob/main/docs/app-release.apk">
+<a href="https://drive.google.com/file/d/1jaDhWiCZOXwsB7WZHu-jdlKrLXf5zvM4/view?usp=sharing">
   <img src="https://img.shields.io/badge/Download-APK-blue?style=for-the-badge&logo=android">
 </a>
 
