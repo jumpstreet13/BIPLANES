@@ -9,11 +9,9 @@ Reviving the legendary Java mobile dogfight game
 </p>
 
 <p align="center">
-  <img src="gameplay.gif" width="500">
+  <img src="retro1.png" width="800">
+  <img src="retro2.jpg" width="800">
 </p>
----
-
-# 🇷🇺 Русская версия
 
 ## ✈️ Что такое BIPLANES?
 
@@ -95,8 +93,6 @@ Reviving the legendary Java mobile dogfight game
 - 🎮 Новые режимы игры
 
 ---
-
-# 🇬🇧 English Version
 
 ## ✈️ What is BIPLANES?
 
