@@ -34,7 +34,7 @@ Reviving the legendary Java mobile dogfight game
 </a>
 
 <a href="https://www.rustore.ru/catalog/app/com.abocha.byplanes">
-  <img src="https://img.shields.io/badge/RuStore-ByPlanes-0077FF?style=for-the-badge">
+  <img src="https://img.shields.io/badge/RuStore-BIPLANES-0077FF?style=for-the-badge">
 </a>
 
 </p>
@@ -118,7 +118,7 @@ Now this classic is back.
 </a>
 
 <a href="https://www.rustore.ru/catalog/app/com.abocha.byplanes">
-  <img src="https://img.shields.io/badge/RuStore-ByPlanes-0077FF?style=for-the-badge">
+  <img src="https://img.shields.io/badge/RuStore-BIPLANES-0077FF?style=for-the-badge">
 </a>
 
 </p>
