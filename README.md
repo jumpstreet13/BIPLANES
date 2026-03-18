@@ -33,6 +33,12 @@ Reviving the legendary Java mobile dogfight game
   <img src="https://img.shields.io/badge/Скачать-APK-blue?style=for-the-badge&logo=android">
 </a>
 
+<a href="https://www.rustore.ru/catalog/app/com.abocha.byplanes">
+  <img src="https://img.shields.io/badge/RuStore-ByPlanes-0077FF?style=for-the-badge">
+</a>
+
+</p>
+
 ---
 
 ## 🎮 Геймплей
@@ -110,6 +116,12 @@ Now this classic is back.
 <a href="https://drive.google.com/file/d/1jaDhWiCZOXwsB7WZHu-jdlKrLXf5zvM4/view?usp=sharing">
   <img src="https://img.shields.io/badge/Download-APK-blue?style=for-the-badge&logo=android">
 </a>
+
+<a href="https://www.rustore.ru/catalog/app/com.abocha.byplanes">
+  <img src="https://img.shields.io/badge/RuStore-ByPlanes-0077FF?style=for-the-badge">
+</a>
+
+</p>
 
 ---
 
